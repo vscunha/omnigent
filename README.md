@@ -263,9 +263,11 @@ Or launch a specific agent runtime:
 omnigent claude                      # Claude Code, in a session your team can join
 omnigent codex                       # Codex
 omnigent cursor                      # Cursor
-omnigent opencode                    # OpenCode
+omnigent opencode                    # OpenCode native TUI
 omnigent hermes                      # Hermes Agent (Nous Research)
 omnigent pi                          # Pi
+omnigent run --harness opencode      # OpenCode headless runtime
+omnigent run path/to/agent.yaml      # your own agent (see "Write your own agent")
 ```
 
 Using OpenClaw? See the [OpenClaw integration guide](docs/openclaw.md) to import
@@ -492,7 +494,7 @@ prompt: You are a helpful data analyst.
 executor:
   harness: claude-sdk          # or: claude-native, codex, codex-native, cursor,
                                # cursor-native, hermes, hermes-native, opencode,
-                               # pi, pi-native, openai-agents
+                               # opencode-native, pi, pi-native, openai-agents
 
 tools:
   # A local Python function (schema auto-generated from the signature)
