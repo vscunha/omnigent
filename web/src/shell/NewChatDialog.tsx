@@ -115,7 +115,7 @@ import {
   nativeCodingAgentForAvailableAgent,
   nativeWrapperLabelsForAgent,
 } from "@/lib/nativeCodingAgents";
-import { useHosts, type Host } from "@/hooks/useHosts";
+import { useHostModelOptions, useHosts, type Host } from "@/hooks/useHosts";
 import {
   controlHost,
   getHostIdentity,
@@ -1436,6 +1436,8 @@ function HarnessConfigModal({
   cursorExecMode,
   bypassSandbox,
   pickedModel,
+  claudeModelOptions,
+  claudeModelsLoading,
   pickedEffort,
   pickedHarness,
   costControlMode,
@@ -1460,6 +1462,8 @@ function HarnessConfigModal({
   cursorExecMode: string;
   bypassSandbox: boolean;
   pickedModel: string;
+  claudeModelOptions: readonly { id: string; displayName: string }[];
+  claudeModelsLoading: boolean;
   pickedEffort: string;
   pickedHarness: string | null;
   costControlMode: CostControlMode;
@@ -1620,11 +1624,21 @@ function HarnessConfigModal({
                       <SelectItem value={MODEL_SELECT_SMART}>Smart Routing</SelectItem>
                     )}
                     <SelectItem value={MODEL_SELECT_DEFAULT}>Default</SelectItem>
-                    {CLAUDE_NATIVE_MODELS.map((m) => (
+                    {claudeModelOptions.map((m) => (
                       <SelectItem key={m.id} value={m.id}>
-                        {m.label}
+                        {m.displayName}
                       </SelectItem>
                     ))}
+                    {claudeModelsLoading && (
+                      <div className="px-2.5 py-1 text-xs text-muted-foreground">
+                        Loading models…
+                      </div>
+                    )}
+                    {!claudeModelsLoading && claudeModelOptions.length === 0 && (
+                      <div className="px-2.5 py-1 text-xs text-muted-foreground">
+                        Models unavailable
+                      </div>
+                    )}
                   </SelectContent>
                 </Select>
               </ConfigRow>
@@ -1957,6 +1971,24 @@ export function NewChatLandingScreen() {
   // (host_type: "managed"), so no host_id or workspace is sent.
   const [sandboxSelected, setSandboxSelected] = useState(
     () => landingDraft?.sandboxSelected ?? false,
+  );
+  const { data: hostClaudeModelOptions, isLoading: hostClaudeModelsLoading } = useHostModelOptions(
+    selectedHostId,
+    "claude-native",
+    !sandboxSelected,
+  );
+  const claudeModelOptions = useMemo(
+    () =>
+      sandboxSelected
+        ? CLAUDE_NATIVE_MODELS.map((model) => ({
+            id: model.id,
+            displayName: model.label,
+          }))
+        : (hostClaudeModelOptions ?? []).map((option) => ({
+            id: option.id,
+            displayName: option.displayName ?? option.id,
+          })),
+    [hostClaudeModelOptions, sandboxSelected],
   );
   // Desktop-shell host status for THIS machine (null outside Electron), so the
   // picker can tag the current machine and offer to auto-connect it.
@@ -2350,7 +2382,7 @@ export function NewChatLandingScreen() {
     if (supportsPermissionMode) {
       const modelValue = routingOn
         ? "Smart Routing"
-        : (CLAUDE_NATIVE_MODELS.find((m) => m.id === pickedModel)?.label ?? "Default");
+        : (claudeModelOptions.find((m) => m.id === pickedModel)?.displayName ?? "Default");
       // Smart Routing freezes effort to the default (the router picks per turn),
       // so mirror the modal: show "Default" whenever routing is on or effort is
       // unset, else the picked level.
@@ -2406,6 +2438,7 @@ export function NewChatLandingScreen() {
     brainHarnessLabels,
     routingOn,
     pickedModel,
+    claudeModelOptions,
     pickedEffort,
     permissionMode,
     approvalMode,
@@ -2461,7 +2494,7 @@ export function NewChatLandingScreen() {
       // nothing stored (or a retired id) it resolves to "" — unselected, so the
       // create omits the override and Claude Code uses its own configured model.
       setPickedModel(
-        stored.model != null && CLAUDE_NATIVE_MODELS.some((m) => m.id === stored.model)
+        stored.model != null && claudeModelOptions.some((m) => m.id === stored.model)
           ? stored.model
           : "",
       );
@@ -2475,10 +2508,10 @@ export function NewChatLandingScreen() {
     } else if (supportsCursorMode) {
       setCursorExecMode(resolve(CURSOR_NATIVE_EXEC_MODES, CURSOR_NATIVE_DEFAULT_EXEC_MODE));
     }
-    // Reseed only on harness change; capability flags are derived from the
-    // same harness so they don't need to be deps.
+    // Reseed on harness changes and when the selected host's catalog resolves;
+    // capability flags are derived from the same harness and stay omitted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNativeHarness]);
+  }, [selectedNativeHarness, claudeModelOptions]);
   // Native-terminal agents interpret slash commands inside their own CLI
   // (the runner injects the text verbatim), so the landing composer must
   // not intercept them — no skills menu, no slash_command routing.
@@ -3516,6 +3549,10 @@ export function NewChatLandingScreen() {
                     cursorExecMode={cursorExecMode}
                     bypassSandbox={bypassSandbox}
                     pickedModel={pickedModel}
+                    claudeModelOptions={claudeModelOptions}
+                    claudeModelsLoading={
+                      !sandboxSelected && selectedHostId !== null && hostClaudeModelsLoading
+                    }
                     pickedEffort={pickedEffort}
                     pickedHarness={pickedHarness}
                     costControlMode={costControlMode}
