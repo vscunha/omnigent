@@ -4310,7 +4310,14 @@ async def _proxy_get_session_resources_to_runner(
         ) from exc
 
 
-async def _reset_runner_resources_after_switch(session_id: str) -> None:
+async def _reset_runner_resources_after_switch(*args: Any, **kwargs: Any) -> None:
+    """Call-time proxy so a facade patch of this symbol is honored here."""
+    from omnigent.server.routes import sessions as _facade
+
+    return await _facade._reset_runner_resources_after_switch(*args, **kwargs)
+
+
+async def _reset_runner_resources_after_switch_impl(session_id: str) -> None:
     """Best-effort reset of the session's runner-side state after a switch.
 
     Run as a fire-and-forget background task by the switch-agent route. Calls
@@ -6018,12 +6025,19 @@ def _agent_provider_family(agent: Agent) -> str | None:
             .load(agent.id, agent.bundle_location, expand_env=agent.session_id is None)
             .spec
         )
-    except Exception:  # noqa: BLE001 — unloadable bundle → unknown family
+    except Exception:  # noqa: BLE001
         return None
     return provider_family_for_harness(spec.executor.harness_kind)
 
 
-def _same_provider_family(a: Agent, b: Agent) -> bool:
+def _same_provider_family(*args: Any, **kwargs: Any) -> bool:
+    """Call-time proxy so a facade patch of this symbol is honored here."""
+    from omnigent.server.routes import sessions as _facade
+
+    return _facade._same_provider_family(*args, **kwargs)
+
+
+def _same_provider_family_impl(a: Agent, b: Agent) -> bool:
     """Return whether two agents share a (known) provider family.
 
     ``False`` when either family is undeterminable, so a fork that can't
@@ -6039,7 +6053,14 @@ def _same_provider_family(a: Agent, b: Agent) -> bool:
     return family_a is not None and family_a == _agent_provider_family(b)
 
 
-def _agent_is_native(agent: Agent) -> bool:
+def _agent_is_native(*args: Any, **kwargs: Any) -> bool:
+    """Call-time proxy so a facade patch of this symbol is honored here."""
+    from omnigent.server.routes import sessions as _facade
+
+    return _facade._agent_is_native(*args, **kwargs)
+
+
+def _agent_is_native_impl(agent: Agent) -> bool:
     """Return whether an agent runs a native CLI harness.
 
     Loads the agent's spec to read its ``harness_kind``. Native targets run
@@ -6060,12 +6081,19 @@ def _agent_is_native(agent: Agent) -> bool:
             .load(agent.id, agent.bundle_location, expand_env=agent.session_id is None)
             .spec
         )
-    except Exception:  # noqa: BLE001 — unloadable bundle → treat as non-native
+    except Exception:  # noqa: BLE001
         return False
     return is_native_harness(spec.executor.harness_kind)
 
 
-def _agent_carries_native_fork_history(agent: Agent) -> bool:
+def _agent_carries_native_fork_history(*args: Any, **kwargs: Any) -> bool:
+    """Call-time proxy so a facade patch of this symbol is honored here."""
+    from omnigent.server.routes import sessions as _facade
+
+    return _facade._agent_carries_native_fork_history(*args, **kwargs)
+
+
+def _agent_carries_native_fork_history_impl(agent: Agent) -> bool:
     """Return whether *agent*'s native harness rebuilds a fork's transcript.
 
     claude-native / codex-native / pi-native each record a resumable native
@@ -6089,7 +6117,7 @@ def _agent_carries_native_fork_history(agent: Agent) -> bool:
             .load(agent.id, agent.bundle_location, expand_env=agent.session_id is None)
             .spec
         )
-    except Exception:  # noqa: BLE001 — unloadable bundle → treat as non-carrying
+    except Exception:  # noqa: BLE001
         return False
     return canonicalize_harness(spec.executor.harness_kind) in _FORK_HISTORY_NATIVE_HARNESSES
 
@@ -6115,7 +6143,7 @@ def _agent_carries_cursor_fork_history(agent: Agent) -> bool:
             .load(agent.id, agent.bundle_location, expand_env=agent.session_id is None)
             .spec
         )
-    except Exception:  # noqa: BLE001 — unloadable bundle → treat as non-carrying
+    except Exception:  # noqa: BLE001
         return False
     return canonicalize_harness(spec.executor.harness_kind) in _CURSOR_FORK_HISTORY_HARNESSES
 
@@ -6133,12 +6161,19 @@ def _native_coding_agent_for_agent(agent: Agent) -> NativeCodingAgent | None:
             .load(agent.id, agent.bundle_location, expand_env=agent.session_id is None)
             .spec
         )
-    except Exception:  # noqa: BLE001 — unloadable bundle → non-native presentation
+    except Exception:  # noqa: BLE001
         return None
     return native_coding_agent_for_harness(spec.executor.harness_kind)
 
 
-def _presentation_labels_for_agent(agent: Agent) -> dict[str, str]:
+def _presentation_labels_for_agent(*args: Any, **kwargs: Any) -> dict[str, str]:
+    """Call-time proxy so a facade patch of this symbol is honored here."""
+    from omnigent.server.routes import sessions as _facade
+
+    return _facade._presentation_labels_for_agent(*args, **kwargs)
+
+
+def _presentation_labels_for_agent_impl(agent: Agent) -> dict[str, str]:
     """Return the Web UI presentation labels for an agent's harness.
 
     A native-CLI agent runs **terminal-first** (the inline terminal is the
@@ -7110,7 +7145,7 @@ def _resolve_subagent_spec(
         parent_spec = agent_cache.load(
             agent.id, agent.bundle_location, expand_env=agent.session_id is None
         ).spec
-    except Exception:  # noqa: BLE001 -- create-time resolution is best-effort; never block create.
+    except Exception:  # noqa: BLE001
         # A bundle that fails to load here must not break session
         # creation; the session still works, just without the
         # derived labels / launch args.
@@ -7469,7 +7504,7 @@ def _delete_stored_session_bundle_after_failure(
     """
     try:
         artifact_store.delete(agent_bundle_location)
-    except Exception:  # noqa: BLE001 - cleanup must not mask the original failure.
+    except Exception:  # noqa: BLE001
         _logger.warning(
             "Failed to delete uploaded session bundle %s after rollback",
             agent_bundle_location,
@@ -8312,7 +8347,9 @@ __all__ = [
     "_add_model_usage_delta",
     "_agent_carries_cursor_fork_history",
     "_agent_carries_native_fork_history",
+    "_agent_carries_native_fork_history_impl",
     "_agent_is_native",
+    "_agent_is_native_impl",
     "_agent_provider_family",
     "_allow_all_edits_eligible",
     "_allow_remember_eligible",
@@ -8414,6 +8451,7 @@ __all__ = [
     "_policy_notice_from_ensure_response",
     "_poll_request_disconnect",
     "_presentation_labels_for_agent",
+    "_presentation_labels_for_agent_impl",
     "_priced_cost_for_display",
     "_provision_managed_sandbox",
     "_proxy_get_session_resources_to_runner",
@@ -8463,6 +8501,7 @@ __all__ = [
     "_require_external_status_forward",
     "_require_host_conn_for_worktree",
     "_reset_runner_resources_after_switch",
+    "_reset_runner_resources_after_switch_impl",
     "_resolve_harness",
     "_resolve_llm_model",
     "_resolve_skill_meta_text_via_runner",
@@ -8471,6 +8510,7 @@ __all__ = [
     "_routing_decision_item_from_sse",
     "_run_compact_locked",
     "_same_provider_family",
+    "_same_provider_family_impl",
     "_seed_missing_title",
     "_seed_missing_title_from_user_message",
     "_session_status_from_cache",

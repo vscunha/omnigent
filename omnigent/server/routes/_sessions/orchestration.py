@@ -417,7 +417,7 @@ async def _best_effort_stop(
     try:
         descendant_ids = await _collect_descendant_conversation_ids(conversation_store, session_id)
         status = _session_status_with_child_rollup(session_id, descendant_ids)
-    except Exception:  # noqa: BLE001 (best-effort; must not block archive/delete)
+    except Exception:  # noqa: BLE001
         _logger.debug(
             "Best-effort stop failed for %s; proceeding anyway",
             session_id,
@@ -431,7 +431,7 @@ async def _best_effort_stop(
     async def _stop(target_id: str) -> None:
         try:
             await _stop_session_via_runner(target_id, runner_router)
-        except Exception:  # noqa: BLE001 (best-effort; must not block archive/delete)
+        except Exception:  # noqa: BLE001
             _logger.debug(
                 "Best-effort stop failed for %s; proceeding anyway",
                 target_id,
@@ -5469,7 +5469,7 @@ async def _create_session_from_existing_agent(
                     agent_name=_tel_agent_name,
                 )
             )
-    except Exception:  # noqa: BLE001 — telemetry must not disrupt session creation
+    except Exception:  # noqa: BLE001
         pass
 
     if body.initial_items:
@@ -6383,7 +6383,7 @@ async def _get_session_snapshot(
                         llm_model,
                         model_override=conv.model_override,
                     )
-        except Exception:  # noqa: BLE001 — best-effort; missing agent must not break session fetch
+        except Exception:  # noqa: BLE001
             pass
     # Skills are runner-owned: the bound runner discovers them against its
     # own filesystem (bundled skills + host skills under the session's
