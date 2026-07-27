@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,6 +10,7 @@ import {
   nativeNotify,
   onNativeNotificationActivated,
   onNativeSidebarDrag,
+  reportColorScheme,
   setBadgeCount as bridgeSetBadge,
   setNativeServerSwitcherHidden,
   supportsBrowser,
@@ -18,6 +21,7 @@ const electronSetBadge = vi.fn();
 const electronNotify = vi.fn().mockResolvedValue(true);
 const electronUnsubscribe = vi.fn();
 const electronOnNotificationActivated = vi.fn().mockReturnValue(electronUnsubscribe);
+const electronSetColorScheme = vi.fn();
 
 // The iOS WKWebView bridge mock, installed on window.omnigentNative.
 const iosSetBadge = vi.fn();
@@ -36,6 +40,20 @@ const androidSetBadge = vi.fn();
 const androidNotify = vi.fn().mockResolvedValue(true);
 const androidUnsubscribe = vi.fn();
 const androidOnNotificationActivated = vi.fn().mockReturnValue(androidUnsubscribe);
+const androidSetColorScheme = vi.fn();
+
+const androidBridgeScriptSource = readFileSync(
+  resolve("android/app/src/main/java/ai/omnigent/android/NativeBridgeScript.kt"),
+  "utf8",
+);
+
+function androidColorSchemeSyncSource(): string {
+  const match = androidBridgeScriptSource.match(
+    /          const resolvePageColorScheme = \(\) => \{[\s\S]*?          syncPageColorScheme\(\);/,
+  );
+  if (!match) throw new Error("Android color-scheme sync script not found");
+  return match[0].replace(/^ {10}/gm, "");
+}
 
 /**
  * Simulate running inside / outside the Electron shell via the preload key.
@@ -50,6 +68,7 @@ function setElectron(on: boolean, withClickRouting = true, withBrowser = false):
     (window as unknown as Record<string, unknown>).omnigentDesktop = {
       kind: "electron",
       setBadgeCount: (...args: unknown[]) => electronSetBadge(...args),
+      setColorScheme: (...args: unknown[]) => electronSetColorScheme(...args),
       notify: (...args: unknown[]) => electronNotify(...args),
       ...(withClickRouting
         ? {
@@ -91,6 +110,7 @@ function setAndroid(on: boolean, withClickRouting = true): void {
     (window as unknown as Record<string, unknown>).omnigentNative = {
       kind: "android",
       setBadgeCount: (...args: unknown[]) => androidSetBadge(...args),
+      setColorScheme: (...args: unknown[]) => androidSetColorScheme(...args),
       notify: (...args: unknown[]) => androidNotify(...args),
       ...(withClickRouting
         ? {
@@ -114,6 +134,8 @@ beforeEach(() => {
 afterEach(() => {
   setElectron(false);
   setIOS(false);
+  setAndroid(true);
+  window.dispatchEvent(new Event("omnigent-native-ready"));
   setAndroid(false);
 });
 
@@ -194,6 +216,70 @@ describe("supportsBrowser", () => {
   it("is false under a non-Electron native shell (iOS)", () => {
     setIOS(true);
     expect(supportsBrowser()).toBe(false);
+  });
+});
+
+describe("reportColorScheme", () => {
+  it("routes the selected system theme through the Electron bridge", () => {
+    setElectron(true);
+    reportColorScheme("dark", "system");
+    expect(electronSetColorScheme).toHaveBeenCalledWith("system");
+  });
+
+  it("routes an explicit selected theme through the Electron bridge", () => {
+    setElectron(true);
+    reportColorScheme("light", "light");
+    expect(electronSetColorScheme).toHaveBeenCalledWith("light");
+  });
+
+  it("routes only resolved concrete schemes through the Android bridge", () => {
+    setAndroid(true);
+    reportColorScheme("light", "system");
+    reportColorScheme("dark", "system");
+    expect(androidSetColorScheme).toHaveBeenNthCalledWith(1, "light");
+    expect(androidSetColorScheme).toHaveBeenNthCalledWith(2, "dark");
+  });
+
+  it("replays an explicit scheme when Android installs after the first report", () => {
+    setAndroid(false);
+    reportColorScheme("light", "light");
+    expect(androidSetColorScheme).not.toHaveBeenCalled();
+
+    setAndroid(true);
+    window.dispatchEvent(new Event("omnigent-native-ready"));
+
+    expect(androidSetColorScheme).toHaveBeenCalledOnce();
+    expect(androidSetColorScheme).toHaveBeenCalledWith("light");
+  });
+});
+
+describe("Android injected color scheme sync", () => {
+  it("re-pushes concrete schemes after live root theme changes", async () => {
+    document.documentElement.className = "light";
+    const post = vi.fn();
+    const disconnect = new Function(
+      "post",
+      `${androidColorSchemeSyncSource()}\nreturn () => colorSchemeObserver?.disconnect();`,
+    )(post) as () => void;
+
+    try {
+      expect(post).toHaveBeenLastCalledWith({ method: "setColorScheme", scheme: "light" });
+      post.mockClear();
+
+      document.documentElement.className = "dark";
+      await vi.waitFor(() => {
+        expect(post).toHaveBeenLastCalledWith({ method: "setColorScheme", scheme: "dark" });
+      });
+
+      post.mockClear();
+      document.documentElement.className = "light";
+      await vi.waitFor(() => {
+        expect(post).toHaveBeenLastCalledWith({ method: "setColorScheme", scheme: "light" });
+      });
+    } finally {
+      disconnect();
+      document.documentElement.className = "";
+    }
   });
 });
 

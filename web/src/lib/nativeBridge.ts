@@ -59,6 +59,8 @@ interface NativeShellApi {
    * ignore it.
    */
   setBadgeCount: (count: number, activation?: BadgeActivation) => void;
+  /** Electron receives the selected theme; Android receives resolved light/dark, never "system". */
+  setColorScheme?: (scheme: "light" | "dark" | "system") => void;
   /** Fire an OS notification; resolves true when it was shown. */
   notify: (params: NativeNotifyParams) => Promise<boolean>;
   // Optional: a shell older than this SPA may lack notification-click routing,
@@ -115,6 +117,10 @@ interface NativeShellApi {
   onNativeInsets?: (callback: (insets: NativeInsets) => void) => () => void;
 }
 
+const ANDROID_BRIDGE_READY_EVENT = "omnigent-native-ready";
+let pendingAndroidColorScheme: "light" | "dark" | undefined;
+let waitingForAndroidBridge = false;
+
 /** Footprints (CSS px) of the native floating bars, reported by the shell. */
 export interface NativeInsets {
   /** Server switcher pill height + its top padding. */
@@ -143,12 +149,6 @@ export interface NativeViewModeParams {
  */
 interface ElectronDesktopApi extends NativeShellApi {
   kind: "electron";
-  /**
-   * Report the web app's resolved color scheme so the shell mirrors it via
-   * nativeTheme (keeps the shell-owned update overlay, native dialogs, and
-   * menus in sync with the in-app theme). Absent on older shells.
-   */
-  setColorScheme?: (scheme: "light" | "dark" | "system") => void;
   /**
    * Desktop auto-update bridge — CONFIG ONLY on current shells. Update
    * notifications are shell-owned (native corner overlay + Server menu); this
@@ -285,6 +285,35 @@ function nativeApi(): NativeShellApi | undefined {
   const api = (window as unknown as { omnigentNative?: NativeShellApi }).omnigentNative;
   if (api?.kind === "ios" || api?.kind === "android" || api?.kind === "electron") return api;
   return electronApi();
+}
+
+function applyAndroidColorScheme(scheme: "light" | "dark"): boolean {
+  const android = nativeApi();
+  if (android?.kind !== "android" || !android.setColorScheme) return false;
+  try {
+    android.setColorScheme(scheme);
+  } catch (err) {
+    console.warn("[nativeBridge] setColorScheme failed:", err);
+  }
+  return true;
+}
+
+function queueAndroidColorScheme(scheme: "light" | "dark"): void {
+  pendingAndroidColorScheme = scheme;
+  if (typeof window === "undefined" || waitingForAndroidBridge) return;
+
+  waitingForAndroidBridge = true;
+  window.addEventListener(
+    ANDROID_BRIDGE_READY_EVENT,
+    () => {
+      waitingForAndroidBridge = false;
+      const pendingScheme = pendingAndroidColorScheme;
+      if (!pendingScheme) return;
+      if (applyAndroidColorScheme(pendingScheme)) pendingAndroidColorScheme = undefined;
+      else queueAndroidColorScheme(pendingScheme);
+    },
+    { once: true },
+  );
 }
 
 /** True when running inside the Electron desktop shell. */
@@ -467,18 +496,30 @@ export function onNativeSidebarDrag(
  * descriptive text. Electron/iOS have a real icon badge and ignore it.
  */
 /**
- * Tell the Electron shell the web app's resolved color scheme so it can mirror
- * it natively (nativeTheme.themeSource). No-op outside Electron or on older
- * shells. Fire-and-forget.
+ * Tell native shell chrome the web app's color scheme. Electron receives the
+ * selected theme so system mode keeps following the OS; Android receives the
+ * resolved scheme for system-bar icon contrast.
+ * No-op outside supported shells. Fire-and-forget.
  */
-export function reportColorScheme(scheme: "light" | "dark" | "system"): void {
-  const native = electronApi();
-  if (!native?.setColorScheme) return;
-  try {
-    native.setColorScheme(scheme);
-  } catch (err) {
-    console.warn("[nativeBridge] setColorScheme failed:", err);
+export function reportColorScheme(
+  resolvedScheme: "light" | "dark",
+  selectedScheme: "light" | "dark" | "system",
+): void {
+  const electron = electronApi();
+  if (electron?.setColorScheme) {
+    try {
+      electron.setColorScheme(selectedScheme);
+    } catch (err) {
+      console.warn("[nativeBridge] setColorScheme failed:", err);
+    }
+    return;
   }
+
+  if (applyAndroidColorScheme(resolvedScheme)) {
+    pendingAndroidColorScheme = undefined;
+    return;
+  }
+  queueAndroidColorScheme(resolvedScheme);
 }
 
 export async function setBadgeCount(count: number, activation?: BadgeActivation): Promise<void> {
