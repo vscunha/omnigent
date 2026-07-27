@@ -305,7 +305,8 @@ export function ProjectSettingsDialog({
                   type="button"
                   onClick={() => setWorkspaceOpen((v) => !v)}
                   aria-expanded={workspaceOpen}
-                  className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-input bg-transparent px-3 text-sm outline-none"
+                  disabled={isLoading}
+                  className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-input bg-transparent px-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span className={workspace ? "truncate" : "truncate text-muted-foreground"}>
                     {workspace || "Browse…"}
@@ -343,10 +344,11 @@ export function ProjectSettingsDialog({
               <input
                 id="project-settings-workspace"
                 data-testid="project-settings-workspace"
-                className="w-full rounded-md border bg-transparent px-3 py-2 text-sm outline-none"
+                className="w-full rounded-md border bg-transparent px-3 py-2 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 placeholder="/path/to/repo"
                 value={workspace}
                 onChange={(e) => setWorkspace(e.target.value)}
+                disabled={isLoading}
               />
             )}
           </Field>
@@ -360,6 +362,7 @@ export function ProjectSettingsDialog({
                 data-testid="project-settings-worktree"
                 checked={useWorktree}
                 onCheckedChange={setUseWorktree}
+                disabled={isLoading}
               />
             </div>
           </Field>

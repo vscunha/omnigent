@@ -565,12 +565,15 @@ folder), carrying the first-class `id` when one exists.
     can't win the race. An opt-in worktree (`use_worktree: true`) generates a
     fresh `worktree-<hex>` branch once the workspace is in place and confirmed a
     git repo — including for empty projects, where the workspace comes from the
-    config or the home-fallback. Still deferred (backend hardening, once the
-    config key vocabulary firms up — from the #3108 review): (a) bound the
-    serialized `config` size on create/update — the value is persisted verbatim
-    and reflected back, so an unbounded blob is a mild storage/response-size
-    amplifier; (b) make `_decode_config` defensive — coerce a non-dict blob
-    (future writer / manual DB edit) back to `{}` rather than returning it raw.
+    config or the home-fallback.
+  - ✅ **Backend `config` hardening (from the #3108 review).** Both landed in
+    `stores/project_store/sqlalchemy_store.py`: (a) `_encode_config` bounds the
+    serialized `config` at 64 KiB (`_CONFIG_MAX_SERIALIZED_LEN`) and raises
+    `INVALID_INPUT` past it — the value is persisted verbatim and reflected back,
+    so an unbounded blob is a mild storage/response-size amplifier; (b)
+    `_decode_config` coerces a non-dict blob (future writer / manual DB edit) back
+    to `{}` rather than returning it raw, so callers can always treat config as a
+    mapping.
   - ✅ **Replaced the inference-based prefill (PR #2133).** That merged PR
     prefilled the composer by *inferring* defaults from the project's newest
     session (host/agent/repo + a fresh worktree branch) — an explicit non-goal

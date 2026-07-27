@@ -26,11 +26,12 @@ export interface ProjectConfig {
   /** Default agent id for new sessions. */
   agent_id?: string;
   /**
-   * When `true` (the default posture new sessions take today), a new session in
-   * a git workspace defaults to a fresh randomly-named worktree;
-   * when `false`, it starts directly in the workspace. Unset = leave the
-   * composer's own default behavior. The base branch a worktree forks from
-   * stays a global preference (Settings › Git), not a project default.
+   * Opt-in worktree default: only `true` is meaningful. When `true`, a new
+   * session in a git workspace starts in a fresh randomly-named worktree; unset
+   * (the only other value the dialog stores) starts directly in the workspace.
+   * `false` is never written and is treated the same as unset. The base branch a
+   * worktree forks from stays a global preference (Settings › Git), not a
+   * project default.
    */
   use_worktree?: boolean;
 }
