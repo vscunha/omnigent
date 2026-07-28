@@ -12,6 +12,14 @@ androidxWebkit = "1.12.1"
 junit = "4.13.2"
 robolectric = "4.14.1"
 androidxTestCore = "1.6.1"
+# Instrumented (androidTest) deps. Pinned to the AGP 8.6 / compileSdk 35 toolchain;
+# androidx.test 1.6.x + espresso 3.6.x + uiautomator 2.4.0 are the last stable line
+# that doesn't force the AGP 9 / compileSdk 36 jump.
+androidxTestRunner = "1.6.2"
+androidxTestRules = "1.6.1"
+androidxTestExtJunit = "1.2.1"
+espresso = "3.6.1"
+uiautomator = "2.4.0"
 # Gradle Play Publisher. 3.x tracks the AGP 8.x / Gradle 8.9 toolchain pinned
 # above; 4.x targets the newer toolchain, so bump it with the rest, not alone.
 playPublisher = "3.12.1"
@@ -24,6 +32,11 @@ androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "a
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTestRules" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
+espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
+uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "uiautomator" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
