@@ -2,6 +2,8 @@ packages:
   - 'web'
   - 'web/electron'
   - '.github/ci-deps'
+  - 'editors/vscode'
+  - 'deploy/cloudflare'
 
 settings:
   # 7-day dependency cooldown, mirroring the Python-side exclude-newer = "P7D" in uv.toml.
@@ -75,7 +77,12 @@ overrides:
 allowBuilds:
   '@anthropic-ai/claude-code': true
   '@google/genai': true
+  '@vscode/vsce-sign': true
   canvas: true
   electron-winstaller: true
+  esbuild: true
+  keytar: true
   msw: true
   protobufjs: true
+  sharp: true
+  workerd: true
