@@ -137,6 +137,7 @@ import { isSessionStoppable } from "@/lib/sessionStop";
 import { getCurrentUserId, resolveIdentity } from "@/lib/identity";
 import { isImeCompositionKeyEvent } from "@/lib/ime";
 import { getSessionState, type SessionState } from "@/hooks/useSessionState";
+import { useChatStore } from "@/store/chatStore";
 import {
   isConversationUnseen,
   isExplicitlyUnread,
@@ -2817,12 +2818,22 @@ function ConversationRow({
   // surface the actionable approval tag. The row still renders bold (the
   // unread signal) via `hasUnseenMessages` below.
   const derivedState = getSessionState(conversation);
+  // The bound session's launch/relaunch window: a send is in flight (local
+  // status "streaming") or the runner is auto-creating the PTY
+  // (`terminalPending`), but the server hasn't confirmed `running` yet — a
+  // cold boot, or a send waking a disconnected runner. Without this the row
+  // shows nothing while the session is visibly "Starting up…" in the chat.
+  // Only the bound (open) conversation has this store state; other rows read
+  // false, and the server-derived states above win once they land.
+  const isStartingUp = useChatStore(
+    (s) => s.conversationId === conversation.id && (s.status === "streaming" || s.terminalPending),
+  );
   const sessionState =
     derivedState?.kind === "awaiting"
       ? derivedState
       : hasUnseenMessages
         ? { kind: "unseen" as const }
-        : derivedState;
+        : (derivedState ?? (isStartingUp ? { kind: "starting" as const } : null));
 
   // Drag-and-drop: a row is grabbable when the viewer owns it (re-filing is
   // owner-only, like the Move-to-project kebab item), outside selection /

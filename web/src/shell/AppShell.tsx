@@ -1164,15 +1164,22 @@ export function AppShell() {
   // either the runner is launching/relaunching (liveness `starting`, known the
   // instant a message is sent) or it's up and auto-creating the PTY
   // (`terminalPending`). Idle stopped sessions are neither → greyed, not spinning.
-  // Suppressed once the session has failed: a runner that crashed before
-  // connecting (`runner_failed_to_start`), or a host that refused the launch
-  // (`harness_not_configured`), sits in the `starting` grace window but can
-  // never come up — so drop the spinner the instant the failed status lands
-  // and let the error banner stand alone. `sessionStatus` (declared above) is
-  // set by both the live `session.status:failed` push and the snapshot reload.
+  // Suppressed once the session has failed AND no send is in flight: a runner
+  // that crashed before connecting (`runner_failed_to_start`), or a host that
+  // refused the launch (`harness_not_configured`), sits in the `starting` grace
+  // window but can never come up — so drop the spinner and let the error banner
+  // stand alone. A runner *disconnect* also marks the session failed, though,
+  // and that status lingers until the relaunched runner pushes a fresh edge —
+  // so an in-flight send (`chatStatus === "streaming"`, which is what upgrades
+  // liveness to `starting`) overrides the suppression: the host is relaunching
+  // the runner right now and the user must see the spinner, not a silent gap.
+  // If the relaunch fails, the fresh `session.status: failed` edge settles the
+  // local send lifecycle back to `idle` and the suppression re-engages.
+  // `sessionStatus` (declared above) is set by both the live
+  // `session.status:failed` push and the snapshot reload.
   const terminalStartingUp =
     !terminalsAvailable &&
-    sessionStatus !== "failed" &&
+    (sessionStatus !== "failed" || chatStatus === "streaming") &&
     (liveness.kind === "starting" || terminalPending);
   // A rail-opened shell (any open terminal key other than the agent's
   // own terminal) takes over the main view chrome-free:
