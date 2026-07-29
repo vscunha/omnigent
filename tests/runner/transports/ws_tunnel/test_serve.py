@@ -380,14 +380,13 @@ def test_websocket_auth_redirect_url_ignores_non_invalid_uri_exceptions() -> Non
 async def test_serve_tunnel_fails_loud_on_auth_redirect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A WS upgrade redirected to an OAuth login URL exits immediately.
+    """A never-connected runner exits after persistent login redirects.
 
-    Previously the tunnel loop would keep retrying forever against
-    a URL it could never upgrade, flooding the user's terminal
-    with ``"isn't a valid URI: scheme isn't ws or wss"`` noise
-    until they Ctrl+C. The fix detects the redirect, raises a
-    fatal ``RuntimeError`` carrying the login URL, and lets the
-    runner exit via ``_entry.main`` so the parent CLI surfaces
+    A runner that has never completed a WS upgrade in this process is
+    almost certainly unauthenticated, so a login-page redirect that
+    persists across a few attempts (allowing for a server mid-restart)
+    raises a fatal ``RuntimeError`` carrying the login URL, and lets
+    the runner exit via ``_entry.main`` so the parent CLI surfaces
     the failure with the log-path hint.
 
     :param monkeypatch: Pytest monkeypatch fixture.
@@ -397,6 +396,16 @@ async def test_serve_tunnel_fails_loud_on_auth_redirect(
         "https://example.databricks.com/oidc/oauth2/v2.0/authorize"
         "?client_id=abc&response_type=code"
     )
+    attempts: list[int] = []
+    sleeps: list[float] = []
+    reconnects: list[int] = []
+
+    async def _on_reconnect() -> None:
+        """Record a catch-up scan that must never fire pre-upgrade.
+
+        :returns: None.
+        """
+        reconnects.append(1)
 
     async def _serve_once(
         app: Any,
@@ -420,21 +429,21 @@ async def test_serve_tunnel_fails_loud_on_auth_redirect(
         :raises InvalidURI: Always, carrying the OAuth target.
         """
         del app, tunnel_url, runner_id, runner_version, auth_token, tunnel_token
+        attempts.append(1)
         raise InvalidURI(login_url, "scheme isn't ws or wss")
 
     async def _sleep(delay: float) -> None:
-        """Fail the test if the loop ever sleeps for a retry.
-
-        Auth redirects must not back off — they will never succeed
-        and the user is staring at a frozen CLI in the meantime.
+        """Record retry backoff delays without waiting.
 
         :param delay: Reconnect delay.
-        :raises AssertionError: Always.
+        :returns: None.
         """
-        raise AssertionError(f"auth redirect should not sleep before retry: {delay}")
+        sleeps.append(delay)
 
     monkeypatch.setattr(serve_module, "_serve_tunnel_once", _serve_once)
     monkeypatch.setattr(serve_module.asyncio, "sleep", _sleep)
+    # Pin jitter to 0 so sleep delays are the unjittered backoff curve.
+    monkeypatch.setattr(serve_module.random, "uniform", lambda *_args, **_kw: 0.0)
 
     with pytest.raises(RuntimeError) as exc_info:
         await serve_tunnel(
@@ -442,7 +451,14 @@ async def test_serve_tunnel_fails_loud_on_auth_redirect(
             server_url="https://example.databricksapps.com",
             runner_id="runner_redirected",
             runner_version="0.1.0",
+            on_reconnect=_on_reconnect,
         )
+    # A couple of retries rule out a transient server restart, then fatal.
+    assert len(attempts) == 3
+    assert sleeps == [0.5, 1.0]
+    # No upgrade was ever accepted, so the catch-up scan never runs
+    # during the initial login-redirect loop.
+    assert reconnects == []
     message = str(exc_info.value)
     # The standard rejection prefix is preserved so
     # ``_entry.main`` recognizes the failure as the fatal class
@@ -453,6 +469,90 @@ async def test_serve_tunnel_fails_loud_on_auth_redirect(
     assert login_url in message
     # User-actionable next step.
     assert "omnigent setup" in message
+
+
+@pytest.mark.asyncio
+async def test_serve_tunnel_retries_auth_redirect_after_successful_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Login redirects on an ever-connected runner retry, not exit.
+
+    Databricks Apps signals an expired bearer as a redirect to the
+    OAuth login page, not a 401 — e.g. after the machine slept
+    through the token's lifetime. A runner that has already served
+    this tunnel must keep retrying (the loop-top refresh mints a
+    fresh token each attempt) instead of exiting and killing the
+    session with ``runner_disconnected``.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+    login_url = "https://example.databricks.com/oidc/oauth2/v2.0/authorize"
+    redirects_after_connect = 5
+    attempts: list[int] = []
+    sleeps: list[float] = []
+
+    async def _serve_once(
+        app: Any,
+        *,
+        tunnel_url: str,
+        server_url: str = "",
+        runner_id: str,
+        runner_version: str,
+        auth_token: str | None = None,
+        tunnel_token: str | None = None,
+        on_connected: Any = None,
+        **_kwargs: Any,
+    ) -> None:
+        """Connect once, then redirect every reconnect to the login page.
+
+        :param app: Runner ASGI app.
+        :param tunnel_url: WebSocket URL.
+        :param runner_id: Stable runner id.
+        :param runner_version: Runner version string.
+        :param auth_token: Optional bearer token.
+        :param tunnel_token: Optional tunnel binding token.
+        :param on_connected: Successful-upgrade callback from the loop.
+        :raises InvalidURI: On every attempt after the first.
+        :raises asyncio.CancelledError: Once enough redirects were retried.
+        """
+        del app, tunnel_url, runner_id, runner_version, auth_token, tunnel_token
+        attempts.append(1)
+        if len(attempts) == 1:
+            on_connected()
+            return
+        if len(attempts) > 1 + redirects_after_connect:
+            raise asyncio.CancelledError
+        raise InvalidURI(login_url, "scheme isn't ws or wss")
+
+    async def _sleep(delay: float) -> None:
+        """Record retry backoff delays without waiting.
+
+        :param delay: Reconnect delay.
+        :returns: None.
+        """
+        sleeps.append(delay)
+
+    monkeypatch.setattr(serve_module, "_serve_tunnel_once", _serve_once)
+    monkeypatch.setattr(serve_module.asyncio, "sleep", _sleep)
+    # Pin jitter to 0 so sleep delays are the unjittered backoff curve.
+    monkeypatch.setattr(serve_module.random, "uniform", lambda *_args, **_kw: 0.0)
+
+    with pytest.raises(asyncio.CancelledError):
+        await serve_tunnel(
+            _noop_app,
+            server_url="https://example.databricksapps.com",
+            runner_id="runner_redirect_retry",
+            runner_version="0.1.0",
+        )
+
+    # One successful connect, then well past the never-connected fatal
+    # streak without raising, ending only via the test's cancellation.
+    assert len(attempts) == 2 + redirects_after_connect
+    # Redirect retries back off (no fatal, no prompt-reconnect reset):
+    # 0.5 after the clean first connection, then doubling per redirect
+    # up to the 10 s cap.
+    assert sleeps == [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
 
 
 @pytest.mark.asyncio
@@ -613,6 +713,7 @@ async def test_serve_tunnel_once_sends_bearer_header(
     # handshake (keeps the asserted header set exact).
     monkeypatch.setattr("omnigent.cli_auth.load_databricks_org_id", lambda _server_url: None)
 
+    connected: list[int] = []
     await _serve_tunnel_once(
         _noop_app,
         tunnel_url="wss://example.databricksapps.com/v1/runners/runner_auth/tunnel",
@@ -621,7 +722,12 @@ async def test_serve_tunnel_once_sends_bearer_header(
         runner_version="0.1.0",
         auth_token="tok-auth",
         tunnel_token="bind-token",
+        on_connected=lambda: connected.append(1),
     )
+
+    # The accepted upgrade fires the connected callback exactly once —
+    # serve_tunnel relies on it to mark the runner as ever-connected.
+    assert connected == [1]
 
     assert captured["url"] == "wss://example.databricksapps.com/v1/runners/runner_auth/tunnel"
     # The runner also sends the first-party Origin sentinel so the server's
