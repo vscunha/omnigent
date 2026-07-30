@@ -152,7 +152,6 @@ bound runner and forwards the CLI's model ids, default, descriptions, context
 windows, and credit rates. The server caches the runner response through the
 same asynchronous picker path as Codex, so provider changes no longer require an
 Omnigent source update and snapshots do not block on the CLI process.
-
 ## Ad-hoc CLI Defaults
 
 Minimal agent YAMLs that declare neither a harness nor a model now resolve the
@@ -160,3 +159,15 @@ Databricks OpenAI-family default from the provider catalog during bundle
 materialization. `--model` and `OMNIGENT_MODEL` remain higher-precedence explicit
 choices. If discovery is unavailable, the CLI asks for one of those explicit
 values instead of silently baking a release-specific model into the bundle.
+
+## Onboarding Defaults
+
+Provider setup derives its suggested default from the live catalog after
+excluding specialty modalities. Stable family preferences choose broadly
+accessible Anthropic and OpenRouter tiers without naming a release. When the
+catalog is unavailable, onboarding accepts an explicit value instead of
+prefilling a source-controlled model pin.
+
+The same policy supplies the final runtime fallback for key, gateway, and local
+providers. Explicit agent and provider defaults still win; without either,
+runtime discovery fails with configuration guidance when no catalog is available.
