@@ -2249,7 +2249,7 @@ function ConversationSection({
 // against this — rather than `ComponentProps<typeof DropdownMenuItem>` — lets
 // either family satisfy `MenuComponents` so `ConversationMenuItems` can author
 // the menu body once and render it under either menu kind.
-type MenuItemProps = {
+interface MenuItemProps {
   children?: ReactNode;
   className?: string;
   disabled?: boolean;
@@ -2257,9 +2257,9 @@ type MenuItemProps = {
   // Radix's menu `onSelect` receives a native Event in both families.
   onSelect?: (event: Event) => void;
   "data-testid"?: string;
-};
+}
 
-type MenuComponents = {
+interface MenuComponents {
   Item: ComponentType<MenuItemProps>;
   Separator: ComponentType<{ className?: string }>;
   Sub: ComponentType<{ children?: ReactNode }>;
@@ -2269,7 +2269,7 @@ type MenuComponents = {
     "data-testid"?: string;
   }>;
   SubContent: ComponentType<{ children?: ReactNode; className?: string }>;
-};
+}
 
 // Two stable bundles, one per Radix menu family. Annotated so a future prop
 // divergence surfaces here rather than at the call site.
