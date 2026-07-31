@@ -45,6 +45,7 @@ from cachetools import TTLCache
 
 from omnigent._platform import default_shell_argv
 from omnigent.llms.anthropic_model_metadata import parse_anthropic_model_metadata
+from omnigent.model_fallbacks import StaticModelFallback, static_model_fallback
 from omnigent.model_metadata import (
     ModelCapability,
     ModelCostTier,
@@ -96,20 +97,6 @@ _LLM_NAME_TOKENS = ("claude", "gpt", "codex", "gemini", "llama", "qwen", "kimi")
 
 # Chat-capable endpoint tasks ("llm/v1/chat"); embeddings/rerankers don't match.
 _LLM_TASK_TOKENS = ("chat", "completion")
-
-# Subscription CLIs expose no listing API: curated ids matching the bundled
-# catalog pin (claude) and the codex ids the codebase already references.
-_SUBSCRIPTION_STATIC_MODELS: dict[str, tuple[str, ...]] = {
-    "claude": (
-        "claude-fable-5",
-        "claude-opus-5",
-        "claude-opus-4-8",
-        "claude-sonnet-5",
-        "claude-sonnet-4-6",
-        "claude-haiku-4-5",
-    ),
-    "codex": ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"),
-}
 
 _ProviderHarness: TypeAlias = Literal[
     "claude-sdk",
@@ -210,12 +197,15 @@ class ModelListing:
     :param models: The enumerated models, e.g.
         ``(ModelEntry(id="databricks-gpt-5-4", family="openai"),)``.
     :param note: Human-readable provenance / failure explanation.
+    :param static_fallback: Ownership metadata for a release-curated fallback;
+        ``None`` for live or empty listings.
     """
 
     source: str
     verified: bool
     models: tuple[ModelEntry, ...]
     note: str
+    static_fallback: StaticModelFallback | None = None
 
 
 @dataclass(frozen=True)
@@ -886,7 +876,8 @@ def _listing_payload(listing: ModelListing) -> _JsonObject:
     """Serialize a :class:`ModelListing` into the tool's JSON row shape.
 
     :param listing: The listing to serialize.
-    :returns: Row dict; ``context_window`` appears only when known.
+    :returns: Row dict; ``context_window`` and ``static_fallback`` appear only
+        when known.
     """
     models: list[_JsonObject] = []
     for entry in listing.models:
@@ -914,12 +905,19 @@ def _listing_payload(listing: ModelListing) -> _JsonObject:
                 "efforts": sorted(metadata.reasoning.efforts),
             }
         models.append(row)
-    return {
+    payload: _JsonObject = {
         "source": listing.source,
         "verified": listing.verified,
         "models": models,
         "note": listing.note,
     }
+    if listing.static_fallback is not None:
+        payload["static_fallback"] = {
+            "owner": listing.static_fallback.owner,
+            "provenance": listing.static_fallback.provenance,
+            "discovery_gap": listing.static_fallback.discovery_gap,
+        }
+    return payload
 
 
 def _redacted_failure_reason(exc: Exception) -> str:
@@ -1045,7 +1043,8 @@ def _static_subscription_listing(provider: ResolvedModelProvider) -> ModelListin
     :param provider: A ``kind="subscription"`` provider descriptor.
     :returns: A ``source="static"`` listing with ``verified=False``.
     """
-    ids = _subscription_static_ids(provider.cli or "")
+    fallback = static_model_fallback(SUBSCRIPTION_KIND, provider.cli or "")
+    ids = fallback.model_ids if fallback is not None else ()
     return ModelListing(
         source="static",
         verified=False,
@@ -1055,16 +1054,8 @@ def _static_subscription_listing(provider: ResolvedModelProvider) -> ModelListin
             "(subscription logins expose no model-listing API; availability "
             "depends on the logged-in plan)"
         ),
+        static_fallback=fallback,
     )
-
-
-def _subscription_static_ids(cli: str) -> tuple[str, ...]:
-    """Return the curated model ids for a subscription CLI.
-
-    :param cli: The CLI short-name, e.g. ``"claude"`` or ``"codex"``.
-    :returns: Curated model ids; empty for an unknown CLI.
-    """
-    return _SUBSCRIPTION_STATIC_MODELS.get(cli, ())
 
 
 def _static_cli_config_listing(provider: ResolvedModelProvider) -> ModelListing:
@@ -1079,7 +1070,8 @@ def _static_cli_config_listing(provider: ResolvedModelProvider) -> ModelListing:
     :param provider: A ``kind="cli-config"`` provider descriptor.
     :returns: A ``source="static"`` listing with ``verified=False``.
     """
-    ids = _SUBSCRIPTION_STATIC_MODELS.get(provider.cli or "", ())
+    fallback = static_model_fallback(CLI_CONFIG_KIND, provider.cli or "")
+    ids = fallback.model_ids if fallback is not None else ()
     return ModelListing(
         source="static",
         verified=False,
@@ -1089,6 +1081,7 @@ def _static_cli_config_listing(provider: ResolvedModelProvider) -> ModelListing:
             "CLI's own config file and is resolved by the CLI at launch, so "
             "it cannot be verified from here"
         ),
+        static_fallback=fallback,
     )
 
 
