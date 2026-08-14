@@ -1912,12 +1912,16 @@ export function NewChatLandingScreen() {
   // "Agents" (SDK / bundle agents like Polly & Debby plus any custom
   // user-registered agents). This is the isNativeCodingAgent split, NOT the
   // builtins/customs split: Polly & Debby are built-ins but belong under
-  // "Agents", not "Harnesses".
+  // "Agents", not "Harnesses". User-registered templates (builtin === false)
+  // are never native harness rows even when their declared harness matches
+  // a native harness id, so they stay under "Agents" / "Custom agents".
+  const isNativeHarnessRow = (a: AvailableAgent): boolean =>
+    isNativeCodingAgent(a) && a.builtin !== false;
   const harnessEntries = useMemo(
-    () => agentList.filter((a) => isNativeCodingAgent(a)),
+    () => agentList.filter(isNativeHarnessRow),
     [agentList],
   );
-  const agentEntries = useMemo(() => agentList.filter((a) => !isNativeCodingAgent(a)), [agentList]);
+  const agentEntries = useMemo(() => agentList.filter((a) => !isNativeHarnessRow(a)), [agentList]);
 
   // "Create custom agent" dialog state and pending bundle. When the user
   // creates a custom agent via the dialog, the bundle input is stored
