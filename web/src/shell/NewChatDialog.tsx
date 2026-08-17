@@ -133,7 +133,11 @@ import {
   type SmartRoutingUnavailableCause,
 } from "@/lib/smartRoutingAvailability";
 import { CLAUDE_NATIVE_MODELS } from "@/lib/claudeNativeModels";
-import { partitionAgentsByKind, sortAgentsForDisplay } from "@/lib/agentGrouping";
+import {
+  isAcpHarnessAgent,
+  partitionAgentsByKind,
+  sortAgentsForDisplay,
+} from "@/lib/agentGrouping";
 import { cn } from "@/lib/utils";
 import { isCurrentServerLocal } from "@/lib/serverOrigin";
 import {
@@ -195,7 +199,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { PoweredByOmnigent } from "@/components/PoweredByOmnigent";
 import { SkillPills } from "@/components/SkillPills";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
-import { formatModelDisplayName, type CostControlMode } from "@/components/CostRoutingControl";
+import type { CostControlMode } from "@/components/CostRoutingControl";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentRowTooltip } from "@/components/AgentHoverCard";
 import { CreateAgentDialog } from "./CreateAgentDialog";
@@ -379,7 +383,7 @@ const CODEX_NATIVE_BYPASS_APPROVAL_OPTION = {
 };
 
 function displayModelId(option: Pick<NativeModelOption, "id">): string {
-  return formatModelDisplayName(option.id);
+  return option.id;
 }
 
 function displayModelName(option: Pick<NativeModelOption, "id" | "displayName">): string {
@@ -1917,20 +1921,20 @@ export function NewChatLandingScreen() {
     [agents],
   );
 
-  // Split the picker into "Harnesses" (the native terminal CLIs) and
-  // "Agents" (SDK / bundle agents like Polly & Debby plus any custom
-  // user-registered agents). This is the isNativeCodingAgent split, NOT the
-  // builtins/customs split: Polly & Debby are built-ins but belong under
-  // "Agents", not "Harnesses". User-registered templates (builtin === false)
-  // are never native harness rows even when their declared harness matches
-  // a native harness id, so they stay under "Agents" / "Custom agents".
-  const isNativeHarnessRow = (a: AvailableAgent): boolean =>
-    isNativeCodingAgent(a) && a.builtin !== false;
+  // Split the picker into "Harnesses" (harness-backed picks — the native
+  // terminal CLIs plus generic-ACP harness agents like Grok / Devin / Kilocode)
+  // and "Agents" (composed SDK / bundle agents like Polly & Debby plus custom
+  // user-registered agents). Harness-backed vs composed, NOT the builtins/customs
+  // split: Polly & Debby are built-ins but are composed agents, so they stay
+  // under "Agents". ACP agents aren't native, so they fold into "More".
   const harnessEntries = useMemo(
-    () => agentList.filter(isNativeHarnessRow),
+    () => agentList.filter((a) => isNativeCodingAgent(a) || isAcpHarnessAgent(a)),
     [agentList],
   );
-  const agentEntries = useMemo(() => agentList.filter((a) => !isNativeHarnessRow(a)), [agentList]);
+  const agentEntries = useMemo(
+    () => agentList.filter((a) => !isNativeCodingAgent(a) && !isAcpHarnessAgent(a)),
+    [agentList],
+  );
 
   // "Create custom agent" dialog state and pending bundle. When the user
   // creates a custom agent via the dialog, the bundle input is stored
@@ -2758,16 +2762,15 @@ export function NewChatLandingScreen() {
           ? CODEX_NATIVE_BYPASS_APPROVAL_OPTION.label
           : (CODEX_NATIVE_APPROVAL_MODES.find((m) => m.value === approvalMode)?.label ??
             approvalMode);
-      const selectedCodexModel = codexModelOptions.find((m) => m.id === pickedModel);
       const modelRows =
         routingOn || !isCodex
           ? routingRow
           : [
               {
                 label: "Model",
-                value: selectedCodexModel
-                  ? displayModelId(selectedCodexModel)
-                  : defaultModelLabel(codexModelOptions, displayModelId),
+                value:
+                  codexModelOptions.find((m) => m.id === pickedModel)?.id ??
+                  defaultModelLabel(codexModelOptions, displayModelId),
               },
             ];
       return [...modelRows, { label: "Approval", value: approvalValue }];
