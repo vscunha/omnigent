@@ -6129,6 +6129,20 @@
             "title": "Models",
             "type": "object"
           },
+          "other_harnesses": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other Harnesses"
+          },
           "title": {
             "anyOf": [
               {
