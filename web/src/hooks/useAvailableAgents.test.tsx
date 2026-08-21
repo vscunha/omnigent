@@ -698,6 +698,55 @@ describe("useAvailableAgents", () => {
     expect(enrichCalls).toEqual([]);
   });
 
+  it("preserves custom provenance when a newer session supersedes a template", async () => {
+    routeFetch({
+      [BUILTINS_URL]: mockResponse({
+        object: "list",
+        data: [
+          {
+            id: "ag_crypto_template",
+            name: "crypto-platform-codex",
+            harness: "codex-native",
+            model: "gpt-5-6-sol",
+            builtin: false,
+            created_at: 100,
+          },
+        ],
+        has_more: false,
+      }),
+      [SCAN_URL]: mockResponse({
+        object: "list",
+        data: [
+          {
+            id: "conv_crypto",
+            agent_id: "ag_crypto_session",
+            agent_name: "crypto-platform-codex",
+            created_at: 200,
+          },
+        ],
+        has_more: false,
+      }),
+    });
+
+    const { result } = renderHook(() => useAvailableAgents(), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data).toEqual([
+      {
+        id: "ag_crypto_session",
+        name: "crypto-platform-codex",
+        display_name: "Crypto Platform — Codex",
+        description: null,
+        harness: null,
+        model: "gpt-5-6-sol",
+        skills: [],
+        builtin: false,
+        bindableId: "ag_crypto_template",
+        sessionId: "conv_crypto",
+      },
+    ]);
+  });
+
   it("degrades to built-ins when the sessions scan fails", async () => {
     routeFetch({
       [BUILTINS_URL]: mockResponse({

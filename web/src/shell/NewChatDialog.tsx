@@ -207,7 +207,11 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { PoweredByOmnigent } from "@/components/PoweredByOmnigent";
 import { SkillPills } from "@/components/SkillPills";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
-import type { CostControlMode } from "@/components/CostRoutingControl";
+import {
+  formatModelDisplayName,
+  shortModelName,
+  type CostControlMode,
+} from "@/components/CostRoutingControl";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentRowTooltip } from "@/components/AgentHoverCard";
 import { CreateAgentDialog } from "./CreateAgentDialog";
@@ -445,7 +449,7 @@ function createdHarnessOptions({
 }
 
 function displayModelId(option: Pick<NativeModelOption, "id">): string {
-  return option.id;
+  return formatModelDisplayName(option.id);
 }
 
 function displayModelName(option: Pick<NativeModelOption, "id" | "displayName">): string {
@@ -1100,9 +1104,18 @@ export function AgentHarnessPicker({
   // this picker only selects the agent / harness.
   const renderRowInner = (agent: AvailableAgent, withTooltip: boolean) => {
     const blurb = AGENT_PICKER_DESCRIPTIONS[agent.name];
+    const modelLabel = agent.model ? shortModelName(formatModelDisplayName(agent.model)) : null;
     const inner = (
       <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
         <span className="truncate">{agent.display_name}</span>
+        {modelLabel && (
+          <span
+            className="truncate text-sm text-muted-foreground/70"
+            data-testid={`agent-model-indicator-${agent.id}`}
+          >
+            {modelLabel}
+          </span>
+        )}
         {blurb && <span className="truncate text-sm text-muted-foreground/70">{blurb}</span>}
       </div>
     );
@@ -2090,20 +2103,15 @@ export function NewChatLandingScreen() {
     [agents],
   );
 
-  // Split the picker into "Harnesses" (harness-backed picks — the native
-  // terminal CLIs plus generic-ACP harness agents like Grok / Devin / Kilocode)
-  // and "Agents" (composed SDK / bundle agents like Polly & Debby plus custom
-  // user-registered agents). Harness-backed vs composed, NOT the builtins/customs
-  // split: Polly & Debby are built-ins but are composed agents, so they stay
-  // under "Agents". ACP agents aren't native, so they fold into "More".
-  const harnessEntries = useMemo(
-    () => agentList.filter((a) => isNativeCodingAgent(a) || isAcpHarnessAgent(a)),
-    [agentList],
-  );
-  const agentEntries = useMemo(
-    () => agentList.filter((a) => !isNativeCodingAgent(a) && !isAcpHarnessAgent(a)),
-    [agentList],
-  );
+  // Split the picker into "Harnesses" (native terminal CLIs plus generic-ACP
+  // harness agents like Grok / Devin / Kilocode) and "Agents" (composed
+  // SDK/bundle agents like Polly & Debby plus custom user-registered agents).
+  // User-registered templates stay under "Agents" even when their declared
+  // harness matches a native or ACP harness id.
+  const isHarnessRow = (a: AvailableAgent): boolean =>
+    (isNativeCodingAgent(a) || isAcpHarnessAgent(a)) && a.builtin !== false;
+  const harnessEntries = useMemo(() => agentList.filter(isHarnessRow), [agentList]);
+  const agentEntries = useMemo(() => agentList.filter((a) => !isHarnessRow(a)), [agentList]);
 
   // "Create custom agent" dialog state and pending bundle. When the user
   // creates a custom agent via the dialog, the bundle input is stored
@@ -2958,15 +2966,16 @@ export function NewChatLandingScreen() {
           ? CODEX_NATIVE_BYPASS_APPROVAL_OPTION.label
           : (CODEX_NATIVE_APPROVAL_MODES.find((m) => m.value === approvalMode)?.label ??
             approvalMode);
+      const selectedCodexModel = codexModelOptions.find((m) => m.id === pickedModel);
       const modelRows =
         routingOn || !isCodex
           ? routingRow
           : [
               {
                 label: "Model",
-                value:
-                  codexModelOptions.find((m) => m.id === pickedModel)?.id ??
-                  defaultModelLabel(codexModelOptions, displayModelId),
+                value: selectedCodexModel
+                  ? displayModelId(selectedCodexModel)
+                  : defaultModelLabel(codexModelOptions, displayModelId),
               },
             ];
       return [...modelRows, { label: "Approval", value: approvalValue }];
@@ -3820,6 +3829,7 @@ export function NewChatLandingScreen() {
       // straight to that dir, which also sidesteps the "branch already
       // exists" guard.
       const agent = agentList.find((a) => a.id === effectiveAgentId);
+      const agentIdForCreate = agent?.bindableId ?? effectiveAgentId;
       const nativeAgent = nativeCodingAgentForAvailableAgent(agent);
       const nativeLabels = nativeWrapperLabelsForAgent(agent);
       const agentSupportsPermissionMode = nativeAgentHasCapability(agent, "permissionMode");
@@ -3946,13 +3956,13 @@ export function NewChatLandingScreen() {
             : (item: SessionListWireItem) =>
                 !knownSessionIds.has(item.id) &&
                 item.parent_session_id == null &&
-                item.agent_id === effectiveAgentId &&
+                item.agent_id === agentIdForCreate &&
                 item.host_id === selectedHostId;
         const createRequest = authenticatedFetch("/v1/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            agent_id: effectiveAgentId,
+            agent_id: agentIdForCreate,
             ...(sandboxSelected
               ? {
                   host_type: "managed",

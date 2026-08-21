@@ -103,6 +103,18 @@
             "title": "Mcp Servers Editable",
             "type": "boolean"
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The default model declared by the agent spec's executor, e.g. `\"gpt-5-6-sol\"`. `None` when the bundle cannot be loaded or the spec leaves the model to the harness.",
+            "title": "Model"
+          },
           "name": {
             "description": "Human-readable agent name, e.g. `\"research-agent\"`.",
             "title": "Name",

@@ -111,6 +111,7 @@ export function shortModelName(model: string): string {
   }
   // Provider-prefixed ids like "opencode-go/deepseek-v4-flash" collapse to
   // the model segment after the last "/", mirroring the databricks- strip.
+  // Provider-prefixed ids collapse to the model segment after the last "/".
   const slash = model.lastIndexOf("/");
   return slash >= 0 ? model.slice(slash + 1) : model;
 }

@@ -54,6 +54,7 @@ def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
     skills: list[SkillSummary] = []
     terminals: list[str] = []
     harness: str | None = None
+    model: str | None = None
     # Prefer the stored entity's description; fall back to the spec's
     # top-level description when the stored value is unset (single-file
     # YAML agents don't persist it at registration today). Lets the
@@ -72,6 +73,7 @@ def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
         # Declared terminal names, in spec order (mirrors the
         # session-agent endpoint so both report it consistently).
         terminals = list(loaded.spec.terminals or {})
+        model = loaded.spec.executor.model
         # Bundled skills only — host-discovered skills are runner-owned
         # and unknowable here (no session, no runner). The new-session
         # composer uses this list for its "/" menu.
@@ -105,6 +107,7 @@ def _to_agent_object(agent: Agent, agent_cache: AgentCache) -> AgentObject:
         created_at=agent.created_at,
         updated_at=agent.updated_at,
         harness=harness,
+        model=model,
         mcp_servers=mcp_servers,
         mcp_servers_editable=False,
         skills=skills,

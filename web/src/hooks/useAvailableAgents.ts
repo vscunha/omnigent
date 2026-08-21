@@ -19,6 +19,9 @@ export interface AvailableAgent {
   // the agent's spec. Lets the picker recognise Codex vs Claude agents
   // by kind rather than by name slug.
   harness: string | null;
+  // Default model declared by the agent spec, when available. Used as the
+  // secondary model indicator in picker rows.
+  model?: string | null;
   // Skills bundled in the agent spec (name + one-line description).
   // Feeds the landing composer's "/" menu before a session exists;
   // host-discovered skills only resolve once a runner is bound, so
@@ -51,6 +54,9 @@ export interface AvailableAgent {
   // session-discovered agents (custom uploads); absent on catalog agents
   // whose full data is already present from GET /v1/agents.
   sessionId?: string;
+  // Bindable catalog id when a newer session superseded a user-registered
+  // template. Session-scoped agents cannot be selected for a new create.
+  bindableId?: string;
 }
 
 const DISPLAY_NAMES: Record<string, string> = {
@@ -70,6 +76,8 @@ function displayNameForAgent(
 ): string {
   // User-registered templates (builtin === false) display their own name;
   // only seeded native rows adopt the native harness display name.
+  // User-registered templates display their own name; only seeded native rows
+  // adopt the native harness display name.
   if (builtin === false) {
     return DISPLAY_NAMES[name] ?? capitalizeAgentName(name);
   }
@@ -79,6 +87,11 @@ function displayNameForAgent(
     DISPLAY_NAMES[name] ??
     capitalizeAgentName(name)
   );
+}
+
+/** Return the catalog id that can be submitted for a picker entry. */
+export function availableAgentBindingId(agent: AvailableAgent): string {
+  return agent.bindableId ?? agent.id;
 }
 
 function dedupeNativeAgents(agents: AvailableAgent[]): AvailableAgent[] {
@@ -110,6 +123,7 @@ interface BuiltinAgentWire {
   name: string;
   description?: string | null;
   harness?: string | null;
+  model?: string | null;
   skills?: { name: string; description: string }[];
   // True only for server-seeded built-ins (deterministic id). Absent on
   // older servers, where every catalog row degrades to a protected entry.
@@ -158,6 +172,7 @@ async function fetchBuiltinAgents(): Promise<AvailableAgent[]> {
     display_name: displayNameForAgent(a.name, a.harness, a.builtin),
     description: a.description ?? null,
     harness: a.harness ?? null,
+    ...(a.model !== undefined ? { model: a.model } : {}),
     skills: a.skills ?? [],
     // Omit rather than set to undefined so toEqual comparisons aren't
     // sensitive to absent-vs-undefined. Logic that reads builtin treats
@@ -217,6 +232,7 @@ interface AgentObjectWire {
   name: string;
   description?: string | null;
   harness?: string | null;
+  model?: string | null;
   skills?: { name: string; description: string }[];
 }
 
@@ -225,18 +241,27 @@ interface AgentObjectWire {
  * description, harness, and skills are null/empty and filled in on hover
  * via prefetchAvailableAgentDetails.
  */
-function sessionAgentFromScan(scanned: ScannedSessionAgent): AvailableAgent {
+function sessionAgentFromScan(
+  scanned: ScannedSessionAgent,
+  builtin?: boolean,
+  bindableId?: string,
+  model?: string | null,
+): AvailableAgent {
   return {
     id: scanned.agentId,
     name: scanned.agentName,
-    display_name: displayNameForAgent(scanned.agentName),
+    display_name: displayNameForAgent(scanned.agentName, null, builtin),
     description: null,
     harness: null,
+    ...(model !== undefined ? { model } : {}),
     skills: [],
     sessionId: scanned.sessionId,
-    // builtin/created_at intentionally omitted: session-derived agents never
-    // seed the catalog, and their recency comes from the scanned session's
-    // createdAt (used directly in the dedup), not from this object.
+    // A newer session can supersede a user-registered template. Preserve the
+    // explicit false so enrichment does not mistake it for a native shadow.
+    ...(builtin !== undefined ? { builtin } : {}),
+    ...(bindableId !== undefined ? { bindableId } : {}),
+    // created_at intentionally omitted: session recency comes from the
+    // scanned session's createdAt (used directly in the dedup).
   };
 }
 
@@ -263,9 +288,10 @@ export async function prefetchAvailableAgentDetails(
           ? a
           : {
               ...a,
-              display_name: displayNameForAgent(json.name, json.harness),
+              display_name: displayNameForAgent(json.name, json.harness, a.builtin),
               description: json.description ?? null,
               harness: json.harness ?? null,
+              ...(json.model != null ? { model: json.model } : {}),
               skills: json.skills ?? [],
             },
       );
@@ -277,7 +303,7 @@ export async function prefetchAvailableAgentDetails(
       const enrichedKey = enrichedAgent
         ? nativeCodingAgentForAvailableAgent(enrichedAgent)?.key
         : undefined;
-      if (enrichedKey) {
+      if (enrichedKey && enrichedAgent?.builtin !== false) {
         const builtinExists = enriched.some(
           (a) => a.id !== agent.id && nativeCodingAgentForAvailableAgent(a)?.key === enrichedKey,
         );
@@ -348,6 +374,9 @@ async function fetchAvailableAgents(): Promise<AvailableAgent[]> {
     recency: number;
     template: AvailableAgent | null;
     scanned: ScannedSessionAgent | null;
+    userRegisteredTemplate: boolean;
+    bindableId: string | null;
+    model: string | null;
   }
   const byName = new Map<string, Candidate>();
 
@@ -358,7 +387,14 @@ async function fetchAvailableAgents(): Promise<AvailableAgent[]> {
   for (const t of userTemplates) {
     const base = agentRootName(t.name);
     if (seededNames.has(base)) continue;
-    byName.set(base, { recency: recencyOf(t), template: t, scanned: null });
+    byName.set(base, {
+      recency: recencyOf(t),
+      template: t,
+      scanned: null,
+      userRegisteredTemplate: true,
+      bindableId: null,
+      model: t.model ?? null,
+    });
   }
 
   for (const agent of scanned) {
@@ -379,12 +415,28 @@ async function fetchAvailableAgents(): Promise<AvailableAgent[]> {
     const recency = agent.createdAt ?? 0;
     const existing = byName.get(base);
     if (!existing || recency > existing.recency) {
-      byName.set(base, { recency, template: null, scanned: agent });
+      byName.set(base, {
+        recency,
+        template: null,
+        scanned: agent,
+        userRegisteredTemplate: existing?.userRegisteredTemplate ?? false,
+        bindableId: existing?.bindableId ?? existing?.template?.id ?? null,
+        model: existing?.model ?? null,
+      });
     }
   }
 
   const resolved = Array.from(byName.values())
-    .map((c) => (c.template !== null ? c.template : sessionAgentFromScan(c.scanned!)))
+    .map((c) =>
+      c.template !== null
+        ? c.template
+        : sessionAgentFromScan(
+            c.scanned!,
+            c.userRegisteredTemplate ? false : undefined,
+            c.bindableId ?? undefined,
+            c.model !== null ? c.model : undefined,
+          ),
+    )
     .filter((agent) => {
       const nativeKey = nativeCodingAgentForAvailableAgent(agent)?.key;
       return nativeKey !== "kiro" || !hasKiroBuiltin;

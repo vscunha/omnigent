@@ -3418,6 +3418,28 @@ describe("NewChatLandingScreen agent picker (mobile drill-in)", () => {
     expect(screen.queryByTestId("new-chat-landing-agent-ag_custom")).toBeNull();
   });
 
+  it("shows a custom agent's model indicator in its picker row", () => {
+    mockAgents([
+      {
+        id: "ag_custom",
+        name: "crypto-platform-codex",
+        display_name: "Crypto Platform — Codex",
+        description: null,
+        harness: "codex-native",
+        model: "opencode-go/deepseek-v4-flash",
+        skills: [],
+        builtin: false,
+      },
+    ]);
+    renderLanding();
+    openPicker();
+    fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+
+    expect(screen.getByTestId("agent-model-indicator-ag_custom").textContent).toBe(
+      "deepseek-v4-flash",
+    );
+  });
+
   it("drills into the More page for harnesses outside the supported set", () => {
     // cursor-native isn't fully supported → folded into "More" (Claude Code and
     // Codex lead inline), so touch gets a drill-in page with a Back row.

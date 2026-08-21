@@ -29,7 +29,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { forkSession, launchRunner } from "@/lib/sessionsApi";
-import { useAvailableAgents, prefetchAvailableAgentDetails } from "@/hooks/useAvailableAgents";
+import {
+  availableAgentBindingId,
+  useAvailableAgents,
+  prefetchAvailableAgentDetails,
+} from "@/hooks/useAvailableAgents";
 import { partitionAgentsByKind } from "@/lib/agentGrouping";
 import { useSessionAgent } from "@/hooks/useAgents";
 import { useHosts, type Host } from "@/hooks/useHosts";
@@ -316,6 +320,10 @@ export function ForkSessionForm({
   const { builtins: builtinSwitchable, customs: customSwitchable } = useMemo(
     () => partitionAgentsByKind(switchableAgents),
     [switchableAgents],
+  );
+
+  const selectedSwitchableAgent = switchableAgents.find(
+    (agent) => availableAgentBindingId(agent) === agentChoice,
   );
 
   const switching = agentChoice !== SAME_AS_SOURCE;
@@ -624,8 +632,7 @@ export function ForkSessionForm({
                     session)" with the parenthetical greyed, mirroring the option. */}
               <SelectValue>
                 {switching ? (
-                  (switchableAgents.find((a) => a.id === agentChoice)?.display_name ??
-                  sourceAgentDisplay)
+                  (selectedSwitchableAgent?.display_name ?? sourceAgentDisplay)
                 ) : (
                   <>
                     {sourceAgentDisplay}{" "}
@@ -646,7 +653,7 @@ export function ForkSessionForm({
               {builtinSwitchable.map((agent) => (
                 <SelectItem
                   key={agent.id}
-                  value={agent.id}
+                  value={availableAgentBindingId(agent)}
                   data-testid={`fork-session-agent-option-${agent.id}`}
                   className="text-sm"
                 >
@@ -659,7 +666,7 @@ export function ForkSessionForm({
               {customSwitchable.map((agent) => (
                 <SelectItem
                   key={agent.id}
-                  value={agent.id}
+                  value={availableAgentBindingId(agent)}
                   data-testid={`fork-session-agent-option-${agent.id}`}
                   className="text-sm"
                 >

@@ -27,6 +27,7 @@ vi.mock("react-router-dom", async (importOriginal) => {
 });
 vi.mock("@/lib/sessionsApi", () => ({ forkSession: vi.fn(), launchRunner: vi.fn() }));
 vi.mock("@/hooks/useAvailableAgents", () => ({
+  availableAgentBindingId: (agent: AvailableAgent) => agent.bindableId ?? agent.id,
   useAvailableAgents: vi.fn(),
   prefetchAvailableAgentDetails: vi.fn(),
 }));

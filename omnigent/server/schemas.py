@@ -234,6 +234,9 @@ class AgentObject(BaseModel):
         bundle cannot be loaded. Lets the Web UI Add Agent picker
         recognise an agent's kind (Codex vs Claude) without
         hardcoding by name slug.
+    :param model: The default model declared by the agent spec's executor,
+        e.g. ``"gpt-5-6-sol"``. ``None`` when the bundle cannot be loaded or
+        the spec leaves the model to the harness.
     :param mcp_servers: MCP servers the agent is connected to
         (secret fields omitted). Empty list when the spec
         declares no MCP servers or when the bundle cannot be
@@ -281,6 +284,7 @@ class AgentObject(BaseModel):
     created_at: int
     updated_at: int | None = None
     harness: str | None = None
+    model: str | None = None
     mcp_servers: list[MCPServerSummary] = Field(default_factory=list)
     mcp_servers_editable: bool = False
     policies: list[PolicySummary] = Field(default_factory=list)
