@@ -39,9 +39,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d5e9f1a2b3c4"
-# Keep the current search migration reachable for databases created by the
-# previous local merge lineage; the compatibility revision is a no-op.
-down_revision: str | None = "b7c8d9e0f1a2"
+down_revision: str | None = "f7a8b9c0d1e2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

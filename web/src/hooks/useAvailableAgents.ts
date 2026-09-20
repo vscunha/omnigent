@@ -57,21 +57,9 @@ const DISPLAY_NAMES: Record<string, string> = {
   nessie: "Nessie",
   polly: "Polly",
   debby: "Debby",
-  // CryptoPlatformWorkspace execution profiles (user-registered templates).
-  "crypto-platform-codex": "Crypto Platform — Codex",
-  "crypto-platform-opencode-go": "Crypto Platform — OpenCode Go",
 };
 
-function displayNameForAgent(
-  name: string,
-  harness?: string | null,
-  builtin?: boolean | null,
-): string {
-  // User-registered templates (builtin === false) display their own name;
-  // only seeded native rows adopt the native harness display name.
-  if (builtin === false) {
-    return DISPLAY_NAMES[name] ?? capitalizeAgentName(name);
-  }
+function displayNameForAgent(name: string, harness?: string | null): string {
   return (
     nativeCodingAgentForHarness(harness)?.displayName ??
     nativeCodingAgentForAgentName(name)?.displayName ??
@@ -146,7 +134,7 @@ export async function fetchAgentCatalog(): Promise<AvailableAgent[]> {
   return rows.map((a) => ({
     id: a.id,
     name: a.name,
-    display_name: displayNameForAgent(a.name, a.harness, a.builtin),
+    display_name: displayNameForAgent(a.name, a.harness),
     description: a.description ?? null,
     harness: a.harness ?? null,
     skills: a.skills ?? [],

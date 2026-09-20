@@ -17,8 +17,9 @@ deleting Omnigent support means:
    grep for ``_omnigent_compat`` to find them).
 3. Delete ``omnigent/spec/omnigent.py`` (the bidirectional
    translator).
-4. Delete ``omnigent/runtime/executors/omnigent.py`` (the
-   executor).
+4. The Omnigent executor module is already gone (it held an
+   experimental executor ABC that has since been removed), so
+   there is nothing left to delete here.
 5. Remove ``ExecutorSpec.config`` from
    ``omnigent/spec/types.py`` (the only field that couldn't
    move here because Python dataclasses don't support
@@ -41,8 +42,14 @@ import yaml
 
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.harness_aliases import canonicalize_harness
-from omnigent.harness_plugins import accepted_harnesses, valid_harnesses
-from omnigent.harness_plugins import harness_aliases as registry_harness_aliases
+from omnigent.harness_plugins import (
+    accepted_harnesses,
+    missing_install_packages,
+    valid_harnesses,
+)
+from omnigent.harness_plugins import (
+    harness_aliases as registry_harness_aliases,
+)
 
 if TYPE_CHECKING:
     from omnigent.spec.types import AgentSpec
@@ -74,21 +81,62 @@ OMNIGENT_EXECUTOR_TYPE = "omnigent"
 # made ``examples/terminal_workers.yaml``
 # fail at spec-load with a "must be one of [...], got
 # 'open-responses'" error.
+#
+# ``opencode-native`` is the native OpenCode server bridge (runner-owned
+# ``opencode serve`` + SSE forwarder); its ``opencode`` / ``native-opencode``
+# spellings are accepted aliases below.
 OMNIGENT_HARNESSES = frozenset(
     {
+        "antigravity",
+        "antigravity-native",
         "claude-native",
         "claude-sdk",
         "codex",
         "codex-native",
-        "databricks_supervisor",
+        "copilot",
+        "cursor",
+        "kimi",
+        "kimi-native",
+        "cursor-native",
+        "kiro-native",
+        "goose",
+        "goose-native",
+        "hermes",
+        "hermes-native",
         "openai-agents",
         "open-responses",
-        "opencode",
         "opencode-native",
         "pi",
+        "pi-native",
+        "qwen",
+        "qwen-native",
     },
 )
 # User-facing aliases accepted in specs and normalized before runtime dispatch.
+OMNIGENT_HARNESS_ALIASES = frozenset(
+    {
+        "claude",
+        "native-kiro",
+        "native-pi",
+        "native-antigravity",
+        "native-goose",
+        "openai-agents-sdk",
+        "agy",
+        "google-antigravity",
+        "kimi-code",
+        "qwen-code",
+        "opencode",
+        "native-opencode",
+        "native-hermes",
+        "github-copilot",
+        "native-kimi",
+    }
+)
+_OMNIGENT_ACCEPTED_HARNESSES = OMNIGENT_HARNESSES | OMNIGENT_HARNESS_ALIASES
+
+# Dynamic registry overlay. The literals above remain as readable documentation
+# for the built-in set, while the exported constants reflect installed
+# community harness plugins.
 OMNIGENT_HARNESSES = valid_harnesses()
 OMNIGENT_HARNESS_ALIASES = frozenset(registry_harness_aliases())
 _OMNIGENT_ACCEPTED_HARNESSES = accepted_harnesses()
@@ -144,9 +192,14 @@ def validate_omnigent_executor(
             f"must be one of {sorted(_OMNIGENT_ACCEPTED_HARNESSES)}",
         )
     elif canonicalize_harness(harness) not in OMNIGENT_HARNESSES:
+        package = missing_install_packages().get(harness) or missing_install_packages().get(
+            canonicalize_harness(harness) or harness
+        )
+        install_hint = f"; install `{package}` to add this harness" if package else ""
         result.add(
             "executor.config.harness",
-            f"must be one of {sorted(_OMNIGENT_ACCEPTED_HARNESSES)}, got {harness!r}",
+            f"must be one of {sorted(_OMNIGENT_ACCEPTED_HARNESSES)}, got {harness!r}"
+            f"{install_hint}",
         )
 
 
@@ -275,6 +328,12 @@ def load_omnigent_yaml(
         unregistered ``type: function`` policy handlers are rejected
         before the loader resolves/calls them (bundle-upload
         guard). See :func:`omnigent.spec.load`.
+    :param prune_invalid_sub_agents: When ``True``, sub-agents that
+        fail validation are dropped (and their ``tools.agents``
+        references removed) instead of failing the whole load, with a
+        WARNING logged per drop. The root agent must still validate.
+        See :func:`omnigent.spec.load` for the full rationale — this
+        is the execution-path backwards-compatibility guard.
     :returns: A validated :class:`AgentSpec` with
         ``executor.type == OMNIGENT_EXECUTOR_TYPE``.
     :raises OmnigentError: If the synthesized spec fails
@@ -314,16 +373,19 @@ def load_omnigent_yaml(
     # ``match_tools``, ``action``, ``reason``, ``set_labels``).
     # Non-mapping roots are tolerated as an empty dict — the
     # omnigent loader would already have rejected them above.
-    # Use _OmnigentYamlLoader (not yaml.safe_load) so that
-    # booleans parse consistently — importing load_agent_def
-    # mutates yaml.SafeLoader's implicit resolvers as a side
-    # effect, causing yaml.safe_load to return string "false"
-    # for unquoted ``false`` values (e.g. use_responses: false).
+    # Use _OmnigentYamlLoader (not yaml.safe_load) so this raw
+    # read resolves booleans the same way load_agent_def's YAML
+    # parsing did — both loaders keep on/off as plain strings
+    # instead of the YAML 1.1 bool aliases.
     raw = _yaml.load(path.read_text(), Loader=_OmnigentYamlLoader) or {}
     if not isinstance(raw, dict):
         raw = {}
     spec = agent_def_to_agent_spec(agent_def, raw_yaml=raw)
     if prune_invalid_sub_agents:
+        # Local import avoids a module-load cycle: spec/__init__ imports
+        # this module at import time, so it cannot be imported at the top
+        # here. Drops sub-agents this client can't validate (version skew)
+        # before the root validation gate below; see omnigent.spec.load.
         from omnigent.spec import _prune_invalid_sub_agents
 
         _prune_invalid_sub_agents(spec)

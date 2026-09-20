@@ -2,7 +2,6 @@ import { cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AUTO_HARNESS_LABEL_KEY,
-  formatModelDisplayName,
   isCostRoutingSession,
   isSubagentRoutingSession,
   shortModelName,
@@ -122,16 +121,7 @@ describe("shortModelName", () => {
     expect(shortModelName("databricks-gpt-5-4-mini")).toBe("gpt-5-4-mini");
   });
 
-  it("collapses provider-prefixed ids to the model segment", () => {
-    expect(shortModelName("opencode-go/deepseek-v4-flash")).toBe("deepseek-v4-flash");
-    // Family hints still win over the slash strip (Claude ids read as
-    // the family token even when provider-prefixed).
-    expect(shortModelName("anthropic/claude-opus-4-7")).toBe("opus");
-  });
-
-  it("formats Codex's dotted spelling without changing router short names", () => {
-    expect(formatModelDisplayName("gpt-5-6-luna")).toBe("gpt-5.6-luna");
-    expect(shortModelName("gpt-5-6-luna")).toBe("gpt-5-6-luna");
+  it("passes unrecognized ids through unchanged (fallback to the id)", () => {
     expect(shortModelName("gpt-5.4")).toBe("gpt-5.4");
   });
 });
