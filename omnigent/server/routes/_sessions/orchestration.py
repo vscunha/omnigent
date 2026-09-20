@@ -10966,6 +10966,10 @@ async def _get_session_snapshot(
             llm_model = conv.model_override or catalog.get("default_model")
     else:
         model_options = await _fetch_model_options(runner_client, session_id, conv, agent_store)
+    if llm_model is None and conv.model_override is not None:
+        llm_model = conv.model_override
+    if llm_model is None and parent_model is not None:
+        llm_model = parent_model
     # Dynamic override from the forwarder (real Claude Code window).
     # Only present after the first statusLine tick; before that the
     # spec default applies.
