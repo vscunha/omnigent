@@ -35,6 +35,7 @@ from omnigent.runner.resource_registry import (
     _CLAUDE_NATIVE_STATUS_POLL_INTERVAL_SECONDS,
     _TERMINAL_ACTIVITY_EMIT_MIN_INTERVAL_SECONDS,
     CLAUDE_NATIVE_TERMINAL_ROLE,
+    OPENCODE_NATIVE_TERMINAL_ROLE,
     SessionResourceRegistry,
 )
 from omnigent.spec.types import AgentSpec, ExecutorSpec
@@ -1828,6 +1829,44 @@ async def test_claude_native_terminal_drives_session_status_from_pane_activity(
     assert [e.status for e in status_edges] == ["running", "idle", "running"]
     # Every edge was published for the launching session, never a stray id.
     assert all(e.session_id == "conv_x" for e in status_edges)
+
+
+@pytest.mark.asyncio
+async def test_opencode_native_terminal_does_not_infer_status_from_pane_activity(
+    tmp_path: Path,
+) -> None:
+    """OpenCode status comes from its SSE forwarder, not a quiet-pane heuristic.
+
+    OpenCode can leave its TUI unchanged while a model or tool is still
+    working. The forwarder owns the authoritative ``session.status`` and
+    ``session.idle`` edges; wiring the one-second pane-idle heuristic here
+    would end the web turn early and hide the eventual assistant message.
+    """
+    capture = _WatcherCapture()
+    instance = _make_capturing_instance(tmp_path, capture, name="opencode", session_key="main")
+    registry = SessionResourceRegistry(terminal_registry=_LaunchReturningRegistry(instance))
+    status_edges: list[_StatusEdge] = []
+    registry.set_session_status_publisher(
+        lambda sid, status, _reason=None: status_edges.append(
+            _StatusEdge(session_id=sid, status=status)
+        )
+    )
+
+    await registry.launch_auxiliary_terminal(
+        session_id="conv_opencode",
+        terminal_name="opencode",
+        session_key="main",
+        spec=_claude_terminal_spec(tmp_path),
+        resource_role=OPENCODE_NATIVE_TERMINAL_ROLE,
+    )
+
+    # OpenCode status is owned by the SSE forwarder, so no pane watcher is
+    # started and pane quietness cannot terminate the web turn.
+    assert capture.started is False
+    assert capture.on_idle is None
+    assert capture.on_activity is None
+    await asyncio.sleep(0)
+    assert status_edges == []
 
 
 @pytest.mark.asyncio

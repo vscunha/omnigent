@@ -51,6 +51,7 @@ def _stub_cli_fallback_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
         (OPENAI_FAMILY, "codex", "@openai/codex"),
         (hi.PI_KEY, "pi", "@earendil-works/pi-coding-agent"),
         (hi.QWEN_KEY, "qwen", "@qwen-code/qwen-code"),
+        (hi.OPENCODE_KEY, "opencode", "opencode-ai@~1.18.0"),
     ],
 )
 def test_install_spec_and_command(key: str, binary: str, package: str) -> None:

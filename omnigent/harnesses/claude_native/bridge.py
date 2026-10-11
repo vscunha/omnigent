@@ -1405,6 +1405,26 @@ class ClaudeNativeToolRelay:
         self._httpd.server_close()
 
 
+def _is_allowed_state_root_symlink(ancestor: Path, target: Path, my_uid: int | None) -> bool:
+    """Allow the user-owned symlink commonly used for ``~/.omnigent`` state."""
+    state_root = _absolute_syntactic_path(Path.home() / ".omnigent")
+    if ancestor != state_root or not target.is_relative_to(state_root):
+        return False
+    if my_uid is None:
+        return False
+    try:
+        link_stat = os.lstat(ancestor)
+        target_stat = os.stat(ancestor)
+    except OSError:
+        return False
+    return (
+        link_stat.st_uid == my_uid
+        and stat.S_ISDIR(target_stat.st_mode)
+        and target_stat.st_uid == my_uid
+        and (target_stat.st_mode & 0o077) == 0
+    )
+
+
 def _ensure_secure_dir(target: Path) -> None:
     """
     Create or validate ``target`` as an owner-only directory chain.
@@ -1443,6 +1463,12 @@ def _ensure_secure_dir(target: Path) -> None:
     getuid = getattr(os, "getuid", None)
     my_uid = getuid() if getuid is not None else None
     for ancestor in ancestors:
+        # A user-owned ``~/.omnigent`` symlink is the documented state layout
+        # (the state root is commonly redirected to another volume); validate
+        # its target instead of rejecting the link. Every other ancestor still
+        # goes through the strict check.
+        if _is_allowed_state_root_symlink(ancestor, target, my_uid):
+            continue
         _ensure_private_dir(ancestor, my_uid)
 
 

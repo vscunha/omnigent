@@ -233,6 +233,15 @@ def test_builtin_background_title_generators_are_registered() -> None:
     assert generators["codex-native"].resolver_harness is None
 
 
+def test_opencode_resolves_to_native_module() -> None:
+    modules = hp.harness_modules()
+
+    assert modules["opencode"] == "omnigent.inner.opencode_native_harness"
+    assert modules["opencode-native"] == "omnigent.inner.opencode_native_harness"
+    assert hp.harness_aliases()["opencode"] == "opencode-native"
+    assert hp.harness_aliases()["native-opencode"] == "opencode-native"
+
+
 def test_community_harness_can_register_background_title_generator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

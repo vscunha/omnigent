@@ -252,6 +252,7 @@ def test_efforts_for_harness_distinguishes_unsupported_from_unknown() -> None:
     assert efforts_for_harness("codex") == CODEX_EFFORTS
     # Known, but declared EffortFamily.NONE.
     assert efforts_for_harness("opencode-native") == frozenset()
+    assert efforts_for_harness("kiro-native") == frozenset()
     # Not in the registry at all — unclassifiable, not unsupported.
     assert efforts_for_harness("some-plugin-harness") is None
     assert efforts_for_harness(None) is None
