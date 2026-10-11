@@ -7,6 +7,7 @@ Covers reading the fork labels into ``_PiNativeLaunchConfig`` and the
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -100,11 +101,13 @@ def _config(
     external_session_id: str | None = None,
     fork_source_external_id: str | None = None,
     fork_carry_history: bool = False,
+    model_override: str | None = None,
 ) -> _PiNativeLaunchConfig:
     return _PiNativeLaunchConfig(
         workspace=workspace,
         server_url="http://server",
         terminal_launch_args=None,
+        model_override=model_override,
         external_session_id=external_session_id,
         fork_source_external_id=fork_source_external_id,
         fork_carry_history=fork_carry_history,
@@ -145,7 +148,9 @@ async def test_resume_provider_lookup_keeps_runner_responsive(
     loop = asyncio.get_running_loop()
     provider_waits: list[bool] = []
 
-    def _slow_provider() -> None:
+    def _slow_provider(**_kwargs: object) -> None:
+        # Accept (and ignore) the session's model, which the resume path threads
+        # through so the rebuilt records name the model the session actually runs.
         serviced = threading.Event()
         loop.call_soon_threadsafe(serviced.set)
         provider_waits.append(serviced.wait(timeout=2))
@@ -274,3 +279,58 @@ async def test_resolve_fresh_session_returns_none(tmp_path: Path) -> None:
         )
     assert out is None
     assert not list(tmp_path.glob("*.jsonl"))
+
+
+@pytest.mark.asyncio
+async def test_fork_rebuild_starts_at_compaction_and_names_session_model(tmp_path: Path) -> None:
+    """A rebuilt fork starts from the last compaction, named for its own model.
+
+    Regression: the rebuild replayed every pre-compaction item, so a forked
+    session opened far over the target model's window and could not take a
+    turn. The synthesized records must also carry the model the session
+    actually runs (here a provider-qualified pick), not the default
+    provider's model.
+    """
+    config = _config(
+        workspace=tmp_path,
+        fork_carry_history=True,
+        model_override="openai-codex/gpt-5.6-luna",
+    )
+    items = [
+        _user_item("summarized away", item_id="u1"),
+        {
+            "id": "c1",
+            "type": "compaction",
+            "summary": "[Codex compaction — context was compacted in the terminal]",
+            "compacted_messages": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "kept baseline"}],
+                }
+            ],
+        },
+        _user_item("tail after boundary", item_id="u2"),
+    ]
+    async with _items_only_client(items) as client:
+        out = await _resolve_pi_resume_session(
+            session_id="conv_1",
+            launch_config=config,
+            session_dir=tmp_path,
+            workspace=tmp_path,
+            server_client=client,
+        )
+    assert out is not None
+    path = next(tmp_path.glob(f"*_{out}.jsonl"))
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    messages = [r["message"] for r in records if r.get("type") == "message"]
+    texts = [
+        block["text"]
+        for message in messages
+        for block in message.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    assert texts == ["kept baseline", "tail after boundary"]
+    assert "summarized away" not in texts
+    assert messages[0]["provider"] == "openai-codex"
+    assert messages[0]["model"] == "gpt-5.6-luna"

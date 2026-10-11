@@ -244,6 +244,11 @@ def pi_session_records_from_session_items(
       committed for a ``call_id`` is replayed: Anthropic rejects a history with
       two ``tool_result`` blocks for one ``tool_use``.
 
+    A ``compaction`` item resets the baseline: the summary / replacement
+    history it carries replaces every entry before it, and later items are
+    appended. Without that reset a rebuilt session replays the entire
+    pre-compaction transcript and overflows the target model's window.
+
     Interrupted assistant turns (and the rest of their response group) are
     skipped so a cancelled turn isn't restored as completed history.
 
@@ -302,6 +307,24 @@ def pi_session_records_from_session_items(
     for index, item in enumerate(items):
         response_id = item.get("response_id")
         if isinstance(response_id, str) and response_id in skip_response_ids:
+            continue
+        if item.get("type") == "compaction":
+            # Replace everything collected so far with this boundary's baseline.
+            # A broken boundary keeps the full history rather than starving context.
+            flush_group()
+            baseline = _pi_entries_from_compaction_item(
+                item,
+                session_id=session_id,
+                external_session_id=external_session_id,
+                index=index,
+                timestamp=timestamp,
+                provider=provider,
+                model=model,
+                tool_names=tool_names,
+            )
+            if baseline:
+                entries = baseline
+                replayed_call_ids.clear()
             continue
         blocks = _pi_assistant_blocks_from_item(item)
         if blocks is None:
@@ -552,6 +575,166 @@ def _pi_assistant_message(
         "stopReason": "stop",
         "timestamp": 0,
     }
+
+
+def _pi_entries_from_compaction_item(
+    item: _JsonObject,
+    *,
+    session_id: str,
+    external_session_id: str,
+    index: int,
+    timestamp: str,
+    provider: str,
+    model: str,
+    tool_names: Mapping[str, str],
+) -> list[_JsonObject]:
+    """Build the Pi entries that replace all prior history at a boundary.
+
+    A compaction item carries the post-compaction context in one of two
+    shapes: the vendor's own replacement history (``compacted_messages`` —
+    codex / claude / cursor / hermes) or a summary (pi / opencode). Either
+    one IS the new baseline; the caller appends everything after it. This is
+    what keeps a rebuilt fork or cold resume at the size the source harness
+    had already compacted to instead of replaying the whole transcript.
+
+    :param item: A ``compaction`` Omnigent item dict.
+    :param session_id: Omnigent conversation id (for synthetic ids).
+    :param external_session_id: Pi session id (for synthetic ids).
+    :param index: Zero-based index of *item* in the source list.
+    :param timestamp: ISO timestamp to stamp on each entry.
+    :param provider: Provider id for assistant messages.
+    :param model: Default model id for assistant messages.
+    :param tool_names: Tool name of each ``function_call`` by ``call_id``; a
+        replayed result whose call is absent keeps an empty ``toolName``.
+    :returns: The replacement history when the item carries one, else the
+        summary as a synthetic user/assistant pair; empty when it carries
+        neither (a broken item, which the caller treats as "keep everything").
+    """
+    boundary = item.get("id")
+    boundary_key = boundary if isinstance(boundary, str) and boundary else f"index-{index}"
+    compacted = item.get("compacted_messages")
+    if isinstance(compacted, list):
+        replacement: list[_JsonObject] = []
+        replayed_call_ids: set[str] = set()
+        group: _AssistantResponseGroup | None = None
+
+        def flush_compacted_group() -> None:
+            nonlocal group
+            if group is None:
+                return
+            replacement.append(
+                {
+                    "type": "message",
+                    "id": group.entry_id,
+                    "timestamp": timestamp,
+                    "message": _pi_assistant_message(
+                        group.blocks, provider=provider, model=group.model or model
+                    ),
+                }
+            )
+            group = None
+
+        for offset, message in enumerate(compacted):
+            if not isinstance(message, dict):
+                continue
+            # Re-id each carried message so two messages that both lack a
+            # vendor id cannot collide on one synthetic digest.
+            carried: _JsonObject = {**message, "id": f"{boundary_key}:c{offset}"}
+            blocks = _pi_assistant_blocks_from_item(carried)
+            if blocks is None:
+                if carried.get("type") == "function_call_output":
+                    call_id = carried.get("call_id")
+                    if isinstance(call_id, str) and call_id:
+                        if call_id in replayed_call_ids:
+                            continue
+                        replayed_call_ids.add(call_id)
+                entry = _pi_non_assistant_entry(
+                    carried,
+                    session_id=session_id,
+                    external_session_id=external_session_id,
+                    index=index + offset,
+                    timestamp=timestamp,
+                    tool_names=tool_names,
+                )
+                if entry is not None:
+                    flush_compacted_group()
+                    replacement.append(entry)
+                continue
+
+            response_id = carried.get("response_id")
+            response_key = response_id if isinstance(response_id, str) and response_id else None
+            item_model = carried.get("model")
+            effective_model = item_model if isinstance(item_model, str) else ""
+            if (
+                group is not None
+                and response_key is not None
+                and group.response_id == response_key
+            ):
+                group.blocks.extend(blocks)
+                group.model = group.model or effective_model
+                continue
+            flush_compacted_group()
+            if blocks:
+                group = _AssistantResponseGroup(
+                    response_id=response_key,
+                    blocks=blocks,
+                    entry_id=_synthetic_pi_entry_id(
+                        session_id=session_id,
+                        external_session_id=external_session_id,
+                        item=carried,
+                        index=index + offset,
+                    ),
+                    model=effective_model,
+                )
+        flush_compacted_group()
+        if replacement:
+            return replacement
+    summary = item.get("summary")
+    if not isinstance(summary, str) or not summary:
+        return []
+
+    # No replacement history, so replay the summary as the same synthetic
+    # exchange the in-process history loader uses (see
+    # ``omnigent.runner.app._convert_raw_items_to_input``): a request to
+    # summarize, answered by the summary itself.
+    def summary_id(suffix: str) -> str:
+        return _synthetic_pi_entry_id(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            item=item,
+            index=index,
+            suffix=suffix,
+        )
+
+    return [
+        {
+            "type": "message",
+            "id": summary_id("compaction-request"),
+            "timestamp": timestamp,
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "[Automatically generated summary of prior "
+                            "conversation context.]\n\n"
+                            "Please provide a summary of our conversation so far."
+                        ),
+                    }
+                ],
+                "timestamp": 0,
+            },
+        },
+        {
+            "type": "message",
+            "id": summary_id("compaction-summary"),
+            "timestamp": timestamp,
+            "message": _pi_assistant_message(
+                [{"type": "text", "text": summary}], provider=provider, model=model
+            ),
+        },
+    ]
 
 
 def pi_resume_session_path(session_dir: Path, external_session_id: str) -> Path:

@@ -970,6 +970,224 @@ async function patchExternalSessionId(config, nativeSessionId) {
   } catch (_err) {}
 }
 
+/**
+ * Read the newest Omnigent conversation item id, or null when unavailable.
+ *
+ * Omnigent's ``last_item_id`` is the EXCLUSIVE cursor a rebuild resumes from,
+ * so it must name a real item: an empty or bogus value is treated as a broken
+ * boundary that makes Omnigent believe the context is ~0 tokens. The mirrored
+ * items are the anchor resolvable without threading a Pi-entry -> Omnigent-item
+ * map through every post site, and the post-compaction baseline itself travels
+ * in ``compacted_messages`` (which every native resume builder prefers over the
+ * cursor). No item yet means there is nothing to anchor to, so the caller skips
+ * the boundary instead of persisting a broken cursor.
+ */
+async function fetchLatestItemId(config) {
+  if (!config || !config.serverUrl || !config.sessionId) return null;
+  if (typeof fetch !== "function") return null;
+  const url =
+    `${config.serverUrl}/v1/sessions/${encodeURIComponent(config.sessionId)}` +
+    "/items?limit=1&order=desc";
+  try {
+    const resp = await fetch(url, { headers: headers(config) });
+    if (!resp || resp.status >= 400) return null;
+    const payload = await resp.json();
+    const items = payload && Array.isArray(payload.data) ? payload.data : [];
+    const first = items[0];
+    const id = first && typeof first.id === "string" ? first.id : "";
+    return id || null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/** Join a Pi message's text blocks into one string. */
+function textFromBlocks(content) {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (block) =>
+        block && block.type === "text" && typeof block.text === "string",
+    )
+    .map((block) => block.text)
+    .join("");
+}
+
+/**
+ * Convert one Pi session entry into flat Omnigent item shapes.
+ *
+ * The rebuild path replays ``message`` / ``function_call`` /
+ * ``function_call_output`` items, so the emitted baseline is expressed in that
+ * vocabulary rather than Pi's. Returns a list because an assistant turn can
+ * carry text and tool calls together, which Omnigent stores as separate items.
+ * Entries that cannot be represented (thinking-only turns, custom entries) yield
+ * an empty list rather than a malformed item.
+ */
+function omniItemsFromPiEntry(entry) {
+  if (!entry || entry.type !== "message") return [];
+  const message = entry.message;
+  if (!message || typeof message !== "object") return [];
+  const content = Array.isArray(message.content) ? message.content : [];
+  const role = message.role;
+  if (role === "user") {
+    const text = textFromBlocks(content);
+    return text
+      ? [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text }],
+          },
+        ]
+      : [];
+  }
+  if (role === "toolResult") {
+    const callId =
+      typeof message.toolCallId === "string" ? message.toolCallId : "";
+    if (!callId) return [];
+    return [
+      {
+        type: "function_call_output",
+        call_id: callId,
+        output: textFromBlocks(content),
+      },
+    ];
+  }
+  if (role !== "assistant") return [];
+  const items = [];
+  const text = textFromBlocks(content);
+  if (text) {
+    items.push({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text }],
+    });
+  }
+  for (const block of content) {
+    if (!block || block.type !== "toolCall") continue;
+    const callId = typeof block.id === "string" ? block.id : "";
+    const name = typeof block.name === "string" ? block.name : "";
+    if (!callId || !name) continue;
+    items.push({
+      type: "function_call",
+      call_id: callId,
+      name,
+      arguments: safeJsonStringify(block.arguments),
+    });
+  }
+  return items;
+}
+
+/**
+ * Return the Pi entries a compaction kept verbatim.
+ *
+ * Pi's post-compaction context is ``summary`` + everything from
+ * ``firstKeptEntryId`` onward, so the baseline has to carry that tail: those
+ * entries were mirrored BEFORE the boundary is reported, and a rebuild drops
+ * every item preceding the boundary. ``buildContextEntries()`` projects the
+ * active branch with compaction already applied; ``getBranch()`` is the
+ * unfiltered fallback. The compaction entry itself is filtered out — the
+ * summary is emitted as its own pair below.
+ */
+function keptPiEntries(ctx, firstKeptEntryId) {
+  const manager = ctx ? ctx.sessionManager : undefined;
+  if (!manager) return [];
+  let entries;
+  try {
+    if (typeof manager.buildContextEntries === "function") {
+      entries = manager.buildContextEntries();
+    } else if (typeof manager.getBranch === "function") {
+      entries = manager.getBranch();
+    }
+  } catch (_err) {
+    return [];
+  }
+  if (!Array.isArray(entries)) return [];
+  const start = entries.findIndex(
+    (entry) => entry && entry.id === firstKeptEntryId,
+  );
+  const kept = start >= 0 ? entries.slice(start) : entries;
+  return kept.filter((entry) => !entry || entry.type !== "compaction");
+}
+
+/**
+ * Build the post-compaction replacement history from Pi's resident context.
+ *
+ * Emitting this is what makes the boundary portable: the claude / codex resume
+ * builders ignore a summary-only compaction item and replay the whole
+ * pre-compaction transcript, so a pi -> claude or pi -> codex fork would still
+ * overflow without it.
+ */
+function compactionReplacementMessages(summary, keptEntries) {
+  const messages = [
+    {
+      type: "message",
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text:
+            "[Automatically generated summary of prior conversation context.]\n\n" +
+            "Please provide a summary of our conversation so far.",
+        },
+      ],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: summary }],
+    },
+  ];
+  for (const entry of keptEntries || []) {
+    for (const item of omniItemsFromPiEntry(entry)) messages.push(item);
+  }
+  return messages;
+}
+
+/**
+ * Report a compaction Pi just saved as a durable Omnigent boundary.
+ *
+ * Pi owns its own context window inside the TUI process, so it — not Omnigent
+ * — decides when and how to compact (``bridge.py``: explicit compaction must
+ * run in Pi, since an AP-side summary of the transcript mirror would desync
+ * the two). What Omnigent needs is the RESULT: without it a fork or cold resume
+ * has no record of the compaction and rebuilds from the entire transcript,
+ * which overflows the target model's window.
+ *
+ * Fail-open throughout — recording a boundary must never wedge Pi.
+ */
+async function postCompactionItem(config, event, ctx) {
+  try {
+    const entry = event ? event.compactionEntry : undefined;
+    const summary =
+      entry && typeof entry.summary === "string" ? entry.summary.trim() : "";
+    if (!summary) return;
+    const lastItemId = await fetchLatestItemId(config);
+    if (!lastItemId) return;
+    const firstKept =
+      entry && typeof entry.firstKeptEntryId === "string"
+        ? entry.firstKeptEntryId
+        : "";
+    const tokensBefore =
+      entry && Number.isFinite(entry.tokensBefore) ? entry.tokensBefore : 0;
+    await postEvent(config, {
+      type: "compaction",
+      data: {
+        summary,
+        last_item_id: lastItemId,
+        model: modelReference(ctx ? ctx.model : undefined),
+        token_count: tokensBefore,
+        compacted_messages: compactionReplacementMessages(
+          summary,
+          keptPiEntries(ctx, firstKept),
+        ),
+      },
+    });
+  } catch (_err) {
+
+  }
+}
+
 function setOmnigentStatus(config, ctx, state) {
   if (!ctx || !ctx.ui || !config) return;
   const urlLabel = config.conversationUrl
@@ -2468,5 +2686,13 @@ module.exports = function (pi) {
     for (const result of results) {
       await postToolResult(result, responseId);
     }
+  });
+
+  // Pi owns its own context window inside the TUI process, so it — not
+  // Omnigent — decides when and how to compact. Report the boundary it just
+  // saved so a fork or cold resume can rebuild from it instead of replaying
+  // the whole pre-compaction transcript.
+  pi.on("session_compact", async (event, ctx) => {
+    await postCompactionItem(config, event, ctx);
   });
 };

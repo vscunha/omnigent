@@ -169,7 +169,10 @@ def test_assistant_message_has_required_metadata() -> None:
 
 def test_function_call_becomes_assistant_toolcall() -> None:
     records = pi_session_records_from_session_items(
-        [_function_call_item(name="bash", call_id="call_1", arguments='{"cmd": "ls"}')],
+        [
+            _function_call_item(name="bash", call_id="call_1", arguments='{"cmd": "ls"}'),
+            _function_output_item(call_id="call_1", output="a.txt"),
+        ],
         session_id="conv_abc",
         external_session_id=_EXTERNAL_ID,
         cwd=Path("/repo"),
@@ -185,12 +188,15 @@ def test_function_call_becomes_assistant_toolcall() -> None:
 
 def test_function_output_becomes_toolresult() -> None:
     records = pi_session_records_from_session_items(
-        [_function_output_item(call_id="call_1", output="file listing")],
+        [
+            _function_call_item(name="bash", call_id="call_1", arguments='{"cmd": "ls"}'),
+            _function_output_item(call_id="call_1", output="file listing"),
+        ],
         session_id="conv_abc",
         external_session_id=_EXTERNAL_ID,
         cwd=Path("/repo"),
     )
-    msg = records[1]["message"]
+    msg = records[2]["message"]
     assert msg["role"] == "toolResult"
     assert msg["toolCallId"] == "call_1"
     assert msg["content"] == [{"type": "text", "text": "file listing"}]
@@ -198,9 +204,7 @@ def test_function_output_becomes_toolresult() -> None:
 
 
 def test_dedup_duplicate_function_output_replays_first_result_once() -> None:
-    """Two outputs for one call_id rebuild as one toolResult, keeping the first:
-    Anthropic rejects a history with two tool_result blocks for one tool_use id.
-    """
+    """Two outputs for one call_id rebuild as one toolResult, keeping the first."""
     items = [
         _user_item("what time is it", item_id="u1"),
         _function_call_item(name="get_time", call_id="c1", arguments="{}", item_id="fc1"),
@@ -215,16 +219,19 @@ def test_dedup_duplicate_function_output_replays_first_result_once() -> None:
         cwd=Path("/repo"),
     )
     entries = records[1:]
-    assert [e["message"]["role"] for e in entries] == [
+    assert [entry["message"]["role"] for entry in entries] == [
         "user",
         "assistant",
         "toolResult",
         "assistant",
     ]
-    results = [e["message"] for e in entries if e["message"]["role"] == "toolResult"]
-    assert [r["toolCallId"] for r in results] == ["c1"]
+    assistant = entries[1]["message"]
+    assert {
+        block.get("id") for block in assistant["content"] if block.get("type") == "toolCall"
+    } == {"c1"}
+    results = [entry["message"] for entry in entries if entry["message"]["role"] == "toolResult"]
+    assert [result["toolCallId"] for result in results] == ["c1"]
     assert results[0]["content"] == [{"type": "text", "text": "12:00 (first mirror)"}]
-    # Skipping the duplicate must not leave a hole in the parent chain.
     assert entries[0]["parentId"] is None
     for prev, cur in itertools.pairwise(entries):
         assert cur["parentId"] == prev["id"]
@@ -248,9 +255,9 @@ def test_dedup_is_scoped_per_call_id() -> None:
         cwd=Path("/repo"),
     )
     results = [
-        (e["message"]["toolCallId"], e["message"]["content"][0]["text"])
-        for e in records[1:]
-        if e["message"]["role"] == "toolResult"
+        (entry["message"]["toolCallId"], entry["message"]["content"][0]["text"])
+        for entry in records[1:]
+        if entry["message"]["role"] == "toolResult"
     ]
     assert results == [("c1", "A"), ("c2", "B")]
 
@@ -541,6 +548,158 @@ def test_interrupted_response_group_is_skipped() -> None:
     assert "partial..." not in texts
     assert "cancelled question" not in texts
     assert "first reply" in texts
+
+
+def test_compaction_replacement_history_replaces_prior_entries() -> None:
+    # A codex-style boundary carries a placeholder summary plus the real
+    # replacement history. Everything before it must be dropped, or a rebuilt
+    # fork replays the whole pre-compaction transcript.
+    items = [
+        _user_item("summarized question", item_id="u1"),
+        _assistant_item("summarized answer", item_id="a1"),
+        {
+            "id": "c1",
+            "type": "compaction",
+            "summary": "[Codex compaction — context was compacted in the terminal]",
+            "compacted_messages": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "kept turn"}],
+                }
+            ],
+        },
+        _user_item("after boundary", item_id="u2", response_id="r2"),
+    ]
+    records = pi_session_records_from_session_items(
+        items, session_id="conv_abc", external_session_id=_EXTERNAL_ID, cwd=Path("/repo")
+    )
+
+    texts = [b["text"] for r in records[1:] for b in r["message"]["content"]]
+    assert texts == ["kept turn", "after boundary"]
+    assert "summarized question" not in texts
+    assert "summarized answer" not in texts
+
+
+def test_compaction_summary_alone_replaces_prior_entries() -> None:
+    # pi and opencode write a real summary with no replacement history. It is
+    # replayed as the synthetic request/answer pair the in-process loader uses.
+    items = [
+        _user_item("summarized question", item_id="u1"),
+        {
+            "id": "c1",
+            "type": "compaction",
+            "summary": "The user asked to ship the fix; two files changed.",
+            "last_item_id": "u1",
+            "token_count": 123,
+        },
+        _user_item("after boundary", item_id="u2", response_id="r2"),
+    ]
+    records = pi_session_records_from_session_items(
+        items, session_id="conv_abc", external_session_id=_EXTERNAL_ID, cwd=Path("/repo")
+    )
+
+    roles = [r["message"]["role"] for r in records[1:]]
+    assert roles == ["user", "assistant", "user"]
+    assert "Automatically generated summary" in records[1]["message"]["content"][0]["text"]
+    assert records[2]["message"]["content"][0]["text"] == (
+        "The user asked to ship the fix; two files changed."
+    )
+    assert records[3]["message"]["content"][0]["text"] == "after boundary"
+
+
+def test_only_last_compaction_defines_the_baseline() -> None:
+    items = [
+        _user_item("first question", item_id="u1"),
+        {
+            "id": "c1",
+            "type": "compaction",
+            "summary": "first summary",
+            "compacted_messages": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "first kept"}],
+                }
+            ],
+        },
+        _user_item("middle question", item_id="u2", response_id="r2"),
+        {
+            "id": "c2",
+            "type": "compaction",
+            "summary": "second summary",
+            "compacted_messages": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "second kept"}],
+                }
+            ],
+        },
+        _user_item("tail", item_id="u3", response_id="r3"),
+    ]
+    records = pi_session_records_from_session_items(
+        items, session_id="conv_abc", external_session_id=_EXTERNAL_ID, cwd=Path("/repo")
+    )
+
+    texts = [b["text"] for r in records[1:] for b in r["message"]["content"]]
+    assert texts == ["second kept", "tail"]
+    assert "first kept" not in texts
+    assert "middle question" not in texts
+
+
+def test_broken_compaction_keeps_full_history() -> None:
+    # An empty summary and no replacement history cannot define a baseline.
+    # Keeping everything is the safe direction: a superset beats a prompt
+    # starved of context (the same call runtime.workflow makes).
+    items = [
+        _user_item("keep me", item_id="u1"),
+        {"id": "c1", "type": "compaction", "summary": ""},
+        _user_item("after boundary", item_id="u2", response_id="r2"),
+    ]
+    records = pi_session_records_from_session_items(
+        items, session_id="conv_abc", external_session_id=_EXTERNAL_ID, cwd=Path("/repo")
+    )
+
+    texts = [b["text"] for r in records[1:] for b in r["message"]["content"]]
+    assert texts == ["keep me", "after boundary"]
+
+
+def test_compacted_messages_without_ids_do_not_collide() -> None:
+    # Carried messages may lack a vendor id; each still needs its own entry id
+    # or two entries would share one synthetic digest.
+    items = [
+        {
+            "id": "c1",
+            "type": "compaction",
+            "summary": "placeholder",
+            "compacted_messages": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "one"}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "two"}],
+                },
+            ],
+        },
+    ]
+    records = pi_session_records_from_session_items(
+        items, session_id="conv_abc", external_session_id=_EXTERNAL_ID, cwd=Path("/repo")
+    )
+
+    ids = [r["id"] for r in records[1:]]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2
+
+    # And stable across a re-synthesis, like every other entry id.
+    again = pi_session_records_from_session_items(
+        items, session_id="conv_abc", external_session_id=_EXTERNAL_ID, cwd=Path("/repo")
+    )
+    assert [r["id"] for r in again[1:]] == ids
 
 
 def test_deterministic_entry_ids() -> None:

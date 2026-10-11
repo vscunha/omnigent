@@ -375,6 +375,7 @@ describe("itemsToBlocks — flat shape", () => {
           { type: "input_image", file_id: "file_xyz" },
           { type: "input_text", text: "carefully." },
           { type: "input_file", file_id: "file_abc" },
+          { type: "input_image", image_url: "data:image/png;base64,abc" },
         ],
       },
     ];
@@ -386,6 +387,7 @@ describe("itemsToBlocks — flat shape", () => {
       { type: "input_image", file_id: "file_xyz" },
       { type: "input_text", text: "carefully." },
       { type: "input_file", file_id: "file_abc" },
+      { type: "input_image", image_url: "data:image/png;base64,abc" },
     ]);
   });
 });

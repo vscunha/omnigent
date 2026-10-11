@@ -4118,3 +4118,263 @@ const originalError = "API key auth failed for provider omnigent: " +
 """
     )
     _run_extension_script(node, _extension_path(), script)
+
+
+def test_session_compact_persists_boundary_with_replacement_history(
+    tmp_path: Path,
+) -> None:
+    """A Pi compaction is recorded as a durable Omnigent boundary.
+
+    Runs the real JavaScript extension under Node. Pi owns its own context
+    window, so it decides when to compact; Omnigent only needs the RESULT. The
+    posted item must carry the summary, a real ``last_item_id`` anchor, and the
+    replacement history (the summary pair plus the entries Pi kept verbatim) —
+    without ``compacted_messages`` the claude / codex resume builders ignore a
+    summary-only boundary and replay the whole pre-compaction transcript.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the pi-native extension e2e test")
+
+    script = r"""
+const assert = require("assert").strict;
+const fs = require("fs");
+const path = require("path");
+
+const extensionPath = process.argv[1];
+const tmpDir = process.argv[2];
+const configPath = path.join(tmpDir, "config.json");
+fs.writeFileSync(
+  configPath,
+  JSON.stringify({
+    serverUrl: "http://omnigent.test",
+    sessionId: "session-1",
+    inboxDir: path.join(tmpDir, "inbox"),
+    authHeaders: { authorization: "Bearer test" },
+  }),
+);
+process.env.OMNIGENT_PI_NATIVE_CONFIG = configPath;
+
+const postedEvents = [];
+const fetchedUrls = [];
+global.fetch = async (url, request) => {
+  fetchedUrls.push(url);
+  if (!request || request.method === undefined) {
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: "item_42" }] }) };
+  }
+  postedEvents.push(JSON.parse(request.body));
+  return { ok: true, status: 200, json: async () => ({ queued: false }) };
+};
+
+global.setInterval = () => ({ fakeInterval: true });
+
+const handlers = {};
+const pi = {
+  registerCommand() {},
+  on(eventName, handler) {
+    handlers[eventName] = handler;
+  },
+  sendUserMessage() {},
+};
+
+require(extensionPath)(pi);
+
+const ctx = {
+  sessionManager: {
+    getSessionId: () => "native-session-1",
+    buildContextEntries: () => [
+      { type: "compaction", id: "c1", summary: "superseded boundary" },
+      {
+        type: "message",
+        id: "k1",
+        message: { role: "user", content: [{ type: "text", text: "kept question" }] },
+      },
+      {
+        type: "message",
+        id: "k2",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "kept answer" },
+            { type: "toolCall", id: "call_9", name: "bash", arguments: { command: "ls" } },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "k3",
+        message: {
+          role: "toolResult",
+          toolCallId: "call_9",
+          content: [{ type: "text", text: "tool output" }],
+        },
+      },
+    ],
+  },
+  model: { id: "gpt-5.6-luna", provider: "openai-codex" },
+  ui: { setTitle() {}, setStatus() {}, notify() {} },
+  abort() {},
+  isIdle: () => true,
+};
+
+(async () => {
+  await handlers.session_compact(
+    {
+      compactionEntry: {
+        summary: "The conversation summary.",
+        firstKeptEntryId: "k1",
+        tokensBefore: 1234,
+      },
+    },
+    ctx,
+  );
+
+  const items = postedEvents.filter((event) => event.type === "compaction");
+  assert.equal(items.length, 1, JSON.stringify(postedEvents));
+  const data = items[0].data;
+
+  assert.equal(data.summary, "The conversation summary.");
+  assert.equal(data.last_item_id, "item_42");
+  assert.equal(data.token_count, 1234);
+  assert.ok(
+    typeof data.model === "string" && data.model.includes("gpt-5.6-luna"),
+    `model was ${data.model}`,
+  );
+  assert.ok(
+    fetchedUrls.some((url) => url.includes("limit=1") && url.includes("order=desc")),
+    JSON.stringify(fetchedUrls),
+  );
+
+  // The summary pair fronts the replacement history, then the kept entries in
+  // Pi's own order, converted to Omnigent's item vocabulary.
+  assert.deepEqual(data.compacted_messages, [
+    {
+      type: "message",
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text:
+            "[Automatically generated summary of prior conversation context.]\n\n" +
+            "Please provide a summary of our conversation so far.",
+        },
+      ],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "The conversation summary." }],
+    },
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "kept question" }],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "kept answer" }],
+    },
+    { type: "function_call", call_id: "call_9", name: "bash", arguments: '{"command":"ls"}' },
+    { type: "function_call_output", call_id: "call_9", output: "tool output" },
+  ]);
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+
+    result = subprocess.run(
+        [node, "-e", script, str(_extension_path()), str(tmp_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_session_compact_fails_open_without_anchor(tmp_path: Path) -> None:
+    """An unreachable server never wedges Pi, and posts no broken boundary.
+
+    ``last_item_id`` is the exclusive cursor a rebuild resumes from; a bogus
+    value makes Omnigent believe the context is ~0 tokens. With no anchor
+    available the boundary is skipped rather than persisted.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the pi-native extension e2e test")
+
+    script = r"""
+const assert = require("assert").strict;
+const fs = require("fs");
+const path = require("path");
+
+const extensionPath = process.argv[1];
+const tmpDir = process.argv[2];
+const configPath = path.join(tmpDir, "config.json");
+fs.writeFileSync(
+  configPath,
+  JSON.stringify({
+    serverUrl: "http://omnigent.test",
+    sessionId: "session-1",
+    inboxDir: path.join(tmpDir, "inbox"),
+    authHeaders: {},
+  }),
+);
+process.env.OMNIGENT_PI_NATIVE_CONFIG = configPath;
+
+const postedEvents = [];
+global.fetch = async (_url, request) => {
+  if (!request || request.method === undefined) throw new Error("server down");
+  postedEvents.push(JSON.parse(request.body));
+  return { ok: true, status: 200, json: async () => ({}) };
+};
+
+global.setInterval = () => ({ fakeInterval: true });
+
+const handlers = {};
+const pi = {
+  registerCommand() {},
+  on(eventName, handler) {
+    handlers[eventName] = handler;
+  },
+  sendUserMessage() {},
+};
+
+require(extensionPath)(pi);
+
+const ctx = {
+  sessionManager: { getSessionId: () => "native-session-1", buildContextEntries: () => [] },
+  ui: { setTitle() {}, setStatus() {}, notify() {} },
+  abort() {},
+  isIdle: () => true,
+};
+
+(async () => {
+  // Must not throw despite the anchor lookup failing.
+  await handlers.session_compact(
+    { compactionEntry: { summary: "summary", firstKeptEntryId: "k1", tokensBefore: 10 } },
+    ctx,
+  );
+  assert.equal(
+    postedEvents.filter((event) => event.type === "compaction").length,
+    0,
+    "no boundary without a real anchor",
+  );
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+
+    result = subprocess.run(
+        [node, "-e", script, str(_extension_path()), str(tmp_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr

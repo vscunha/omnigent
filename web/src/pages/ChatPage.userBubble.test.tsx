@@ -201,6 +201,16 @@ describe("UserBubble image attachments", () => {
     expect(screen.getByText("Unavailable image")).toBeInTheDocument();
   });
 
+  it("renders a native-resolved image block without a file id or filename", () => {
+    renderBubble(
+      userBubble("", {
+        content: [{ type: "input_image", image_url: INLINE_PNG }],
+      }),
+    );
+
+    expect(screen.getByRole("img", { name: "Attached image" })).toHaveAttribute("src", INLINE_PNG);
+  });
+
   it("still shows a chip while an upload is in flight", () => {
     renderBubble(
       userBubble("uploading", {

@@ -2383,6 +2383,7 @@ async def _resolve_pi_resume_session(
     session_dir: Path,
     workspace: Path,
     server_client: httpx.AsyncClient | None,
+    agent_spec: AgentSpec | ResolvedSpec | None = None,
 ) -> str | None:
     """
     Ensure Pi has a local session JSONL and return the id to launch with.
@@ -2412,6 +2413,8 @@ async def _resolve_pi_resume_session(
     :param session_dir: Directory passed to ``pi --session-dir``.
     :param workspace: Resolved cwd Pi will run in.
     :param server_client: Runner Omnigent server client.
+    :param agent_spec: The session's resolved agent spec, used only to read the
+        spec-pinned model for the synthesized records' metadata.
     :returns: Pi session id to launch with via ``--session``, or ``None`` to
         launch fresh.
     """
@@ -2425,18 +2428,37 @@ async def _resolve_pi_resume_session(
         mint_pi_session_id,
     )
 
-    # Resolve the provider's model only for the synthesized assistant records'
-    # informational ``model`` field; Pi's resume uses the live provider, so a
-    # missing model is harmless.
+    # Name the model this session actually runs in the synthesized assistant
+    # records. The default provider's model is the wrong answer for a session
+    # pinned to another provider (Pi's own ``openai-codex`` login, say), which
+    # left rebuilt forks stamped with a model they never ran. Mirrors the
+    # launch's own precedence: the persisted ``/model`` override wins over the
+    # spec's pinned model, and a managed provider resolved for that model names
+    # both halves. Without one, a provider-qualified id (``openai-codex/gpt-5.6-
+    # luna``) splits exactly as Pi's own ``--model`` parser reads it.
+    spec_model = launch_config.model_override or _pi_native_model_from_spec(agent_spec)
+    provider_id = ""
     model = ""
     try:
         from omnigent.harnesses.pi_native.credentials import resolve_pi_native_provider
 
-        provider = await asyncio.to_thread(resolve_pi_native_provider)
-        if provider is not None and getattr(provider, "model", None):
-            model = provider.model
+        # Provider discovery does network I/O; keep the runner's stream and
+        # tunnel heartbeats responsive while Pi starts.
+        resolved = await asyncio.to_thread(resolve_pi_native_provider, model=spec_model)
+        if resolved is not None:
+            provider_id = resolved.provider_id
+            model = resolved.model
+        elif spec_model:
+            head, separator, tail = spec_model.partition("/")
+            if separator and tail and "/" not in tail:
+                provider_id, model = head, tail
+            else:
+                model = spec_model
     except Exception:  # noqa: BLE001 — informational only; never block launch
-        model = ""
+        model = spec_model or ""
+    record_metadata: dict[str, str] = {"model": model}
+    if provider_id:
+        record_metadata["provider"] = provider_id
 
     # Case 1: cold resume of a session that already has a captured Pi id.
     if launch_config.external_session_id is not None:
@@ -2448,7 +2470,7 @@ async def _resolve_pi_resume_session(
                 external_session_id=launch_config.external_session_id,
                 session_dir=session_dir,
                 workspace=workspace,
-                model=model,
+                **record_metadata,
             )
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             built = None
@@ -2490,7 +2512,7 @@ async def _resolve_pi_resume_session(
                 external_session_id=minted,
                 session_dir=session_dir,
                 workspace=workspace,
-                model=model,
+                **record_metadata,
             )
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             built = None
@@ -2652,6 +2674,7 @@ async def _auto_create_pi_terminal(
         session_dir=session_dir,
         workspace=launch_config.workspace,
         server_client=server_client,
+        agent_spec=agent_spec,
     )
     pi_args = _build_pi_native_args(
         terminal_launch_args=launch_config.terminal_launch_args,
