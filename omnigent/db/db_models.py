@@ -1432,6 +1432,43 @@ class SqlUserDailyCost(OmnigentBase):
     updated_at: Mapped[int] = mapped_column(Integer)
 
 
+class SqlInboxNotification(OmnigentBase):
+    """Durable notification shown in one user's Omnigent Inbox."""
+
+    __tablename__ = "inbox_notifications"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16(), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_session_id: Mapped[str] = mapped_column(Uuid16(), nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    body: Mapped[str] = mapped_column(CompressedText, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    acknowledged_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('info', 'attention', 'critical')",
+            name="ck_inbox_notifications_severity",
+        ),
+        Index(
+            "ix_inbox_notifications_user_outstanding",
+            "workspace_id",
+            "user_id",
+            "acknowledged_at",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
+
 class SqlScheduledTask(OmnigentBase):
     """
     SQLAlchemy model for the ``scheduled_tasks`` table.
@@ -1453,6 +1490,9 @@ class SqlScheduledTask(OmnigentBase):
     :param agent_id: The agent bound to this task (relates to
         ``agents.id``). Cascade cleanup on agent deletion is application-owned
         — there is no DB-level foreign key (schema Rule R032).
+    :param project_id: Optional owner-scoped project that receives each fired
+        session. Project cleanup is application-owned; there is no DB foreign
+        key (schema Rule R032).
     :param model_override: Per-task LLM model override, e.g.
         ``"claude-opus-4-7"``. ``None`` means use the agent default.
     :param reasoning_effort: Per-task reasoning-effort hint, e.g. ``"high"``.
@@ -1461,6 +1501,8 @@ class SqlScheduledTask(OmnigentBase):
         that support one (Claude Code), e.g. ``"acceptEdits"``. The fire path
         turns it into the runner's ``--permission-mode`` launch arg. ``None``
         means use the agent default.
+    :param agent_session_control: Whether sessions fired by this task receive
+        the independent-session supervision tools.
     :param workspace: Absolute path on disk where a fired session's runner
         should start (the source repo / working dir). ``None`` when unset.
     :param base_branch: Git base ref a firing branches FROM when it creates a
@@ -1523,6 +1565,9 @@ class SqlScheduledTask(OmnigentBase):
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Relates to agents.id. No DB foreign key (Rule R032); cascade is app-owned.
     agent_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    # Optional owner-scoped project for sessions fired by this task. No DB
+    # foreign key; project deletion is handled by the application.
+    project_id: Mapped[str | None] = mapped_column(Uuid16, nullable=True)
     # Per-task overrides — None means fall back to the agent default. Widths
     # mirror the matching conversations.* override columns.
     model_override: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -1531,6 +1576,9 @@ class SqlScheduledTask(OmnigentBase):
     # (Claude Code). The fire path converts it to the runner's
     # ``--permission-mode`` launch arg. NULL = use the agent default.
     permission_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_session_control: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false()
+    )
     # Per-firing cost budget in USD. When set, the fire path attaches a
     # cost_budget policy to each spawned session. NULL = no per-firing cap.
     max_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)

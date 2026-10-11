@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import Engine
 
 from omnigent.db.utils import (
@@ -30,8 +31,9 @@ from omnigent.db.utils import (
 )
 
 _NEW_REVISION = "d5e9f1a2b3c4"
-# Revision just before this one (its down_revision).
-_PRE_REVISION = "f7a8b9c0d1e2"
+# Revision just before this one (its down_revision). The compatibility merge
+# keeps databases created by the previous migration lineage upgradeable.
+_PRE_REVISION = "b7c8d9e0f1a2"
 _ITEMS_INDEX = "ix_conversation_items_search_text_trgm"
 _TITLE_INDEX = "ix_conversations_title_trgm"
 
@@ -61,6 +63,25 @@ def test_trgm_indexes_absent_on_sqlite(sqlite_engine: Engine) -> None:
     """
     assert _ITEMS_INDEX not in _index_names(sqlite_engine, "conversation_items")
     assert _TITLE_INDEX not in _index_names(sqlite_engine, "conversations")
+
+
+def test_legacy_merge_head_upgrades_to_current_head(tmp_path: Path) -> None:
+    """A database left at the legacy merge head can reach the current head."""
+    uri = f"sqlite:///{tmp_path / 'legacy-head.db'}"
+    cfg = _build_alembic_config(uri)
+    engine = sa.create_engine(uri)
+    try:
+        # Build the schema a real legacy database would have at the compat
+        # bridge revision, then verify the chain carries it to the single head.
+        command.upgrade(cfg, _PRE_REVISION)
+        command.upgrade(cfg, "head")
+        with engine.connect() as conn:
+            revision = conn.execute(
+                sa.text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert revision == ScriptDirectory.from_config(cfg).get_heads()[0]
+    finally:
+        engine.dispose()
 
 
 def test_roundtrip_reversible_on_sqlite(tmp_path: Path) -> None:
