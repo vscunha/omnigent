@@ -1294,13 +1294,17 @@ export function useStopSession() {
 }
 
 /**
- * Archive multiple conversations in parallel via `PATCH /v1/sessions/{id}`.
+ * Archive multiple conversations via `PATCH /v1/sessions/{id}`.
  *
  * Optimistic like the single-session archive: `onMutate` overlays the new flag
  * onto every selected row so the sidebar repaints immediately. Each session is
- * archived independently — individual failures don't block the rest — and
- * `onError` reconciles the whole selection from the server (rows whose PATCH
- * failed snap back). Returns the session IDs that failed.
+ * archived independently — individual failures don't block the rest. Requests
+ * are deliberately serialized because archiving triggers server-side runner
+ * cleanup and session-update reconciliation, and fanning out several old
+ * sessions at once can overload that lifecycle path. `onError` reconciles the
+ * whole selection from the server (rows whose PATCH failed snap back). Returns
+ * the session IDs that failed.
+ * The conversations list is invalidated once on completion.
  */
 export function useBulkArchiveConversations() {
   const queryClient = useQueryClient();
@@ -1315,9 +1319,23 @@ export function useBulkArchiveConversations() {
       /** Archived sessions whose worktree should also be removed. */
       deleteWorktreeIds?: ReadonlySet<string>;
     }) => {
-      const results = await Promise.allSettled(
-        ids.map((id) => archiveConversation(id, archived, deleteWorktreeIds?.has(id) === true)),
-      );
+      const results: PromiseSettledResult<Conversation>[] = [];
+      for (const id of ids) {
+        try {
+          // Keep one archive lifecycle transition in flight at a time. The
+          // server still handles each session independently, so a failure
+          // records that id and the remaining sessions continue.
+          // eslint-disable-next-line no-await-in-loop
+          const value = await archiveConversation(
+            id,
+            archived,
+            deleteWorktreeIds?.has(id) === true,
+          );
+          results.push({ status: "fulfilled", value });
+        } catch (reason) {
+          results.push({ status: "rejected", reason });
+        }
+      }
       const failed: string[] = [];
       for (let i = 0; i < results.length; i++) {
         if (results[i].status === "rejected") failed.push(ids[i]);

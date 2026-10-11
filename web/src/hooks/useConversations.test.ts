@@ -2137,6 +2137,39 @@ describe("useBulkArchiveConversations", () => {
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["conversations"] });
   });
 
+  it("does not overlap archive requests for a multi-session archive", async () => {
+    let active = 0;
+    let maxActive = 0;
+    fetchMock.mockImplementation(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 1);
+      });
+      active -= 1;
+      return mockResponse({
+        id: `conv_${active}`,
+        object: "conversation",
+        title: "Archived",
+        created_at: 0,
+        updated_at: 10,
+        labels: {},
+      });
+    });
+
+    const { rendered } = renderBulkArchiveHook();
+    rendered.result.current.mutate({
+      ids: ["conv_a", "conv_b", "conv_c"],
+      archived: true,
+    });
+    await waitFor(() => expect(rendered.result.current.isSuccess).toBe(true));
+
+    // Archiving a session also starts server-side lifecycle cleanup and a
+    // session-update reconciliation. Keep the client-side archive work
+    // serialized so several old sessions cannot overload that path at once.
+    expect(maxActive).toBe(1);
+  });
+
   it("throws with failed ids when some archives fail", async () => {
     fetchMock
       .mockResolvedValueOnce(

@@ -121,6 +121,27 @@ async def test_unarchive_restores_session_to_default_listing(
     assert session_id in listed_ids
 
 
+async def test_archiving_multiple_sessions_concurrently_succeeds(
+    client: httpx.AsyncClient,
+) -> None:
+    """Archiving more than one independent session is an all-success batch."""
+    sessions = [
+        await create_test_session(client, name=f"archive-concurrent-{index}") for index in range(3)
+    ]
+    responses = await asyncio.gather(
+        *(
+            client.patch(
+                f"/v1/sessions/{session['id']}",
+                json={"archived": True},
+            )
+            for session in sessions
+        )
+    )
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert all(response.json()["archived"] is True for response in responses)
+
+
 # ── Best-effort stop before archive ───────────────────────
 
 
