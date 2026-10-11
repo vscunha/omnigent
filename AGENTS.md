@@ -42,6 +42,98 @@ Use `just` for common tasks; run `just --list` for grouped recipes.
 - `just lint` / `just lint-all` — run pre-commit
 - `just normalize-locks` — rewrite lockfile registries to PyPI/npmjs.org
 
+### Remote personal-machine target
+
+- For tasks explicitly targeting the user's personal machine, use the SSH
+  target `victo@vscunha.ddns.net`; do not assume the current checkout is that
+  machine.
+- Run all setup, build, download, and test commands on that remote target
+  inside a persistent `tmux` session; use the current VM only as the SSH
+  transport and do not place artifacts there.
+- Before hardware changes, verify the remote `hostname`, architecture, GPU
+  visibility, and driver status. Never store or print SSH passwords, keys, or
+  host tokens in the repository or command history.
+
+## Runtime and database safety
+
+This checkout is the live Omnigent installation. Preserve its runtime state,
+host identity, database, and active Git branch unless the user explicitly asks
+for a migration, reset, or replacement.
+
+### Services
+
+- The authoritative local services are the user-systemd units
+  `omnigent-server.service` and `omnigent-host.service`.
+- Their working tree is `/mnt/storage/omnigent-working-branch`. Keep the
+  server, host, runners, and new sessions on this checkout and its current
+  branch.
+- Do not launch a manual `omnigent server` or `omnigent host` alongside the
+  systemd units. Do not kill a working process just because it is not attached
+  to the current terminal; first determine whether it belongs to systemd.
+- Before changing runtime state, check the branch and service ownership:
+
+  ```bash
+  git branch --show-current
+  systemctl --user is-active omnigent-server.service omnigent-host.service
+  curl -fsS http://127.0.0.1:6767/health
+  ```
+
+- Apply updates to this live installation only through `./update.sh` from the
+  repository root. Do not manually rebuild the web bundle or restart the
+  server and host as a normal update workflow. The script synchronizes the
+  locked dependencies, always rebuilds the embedded web UI, creates a
+  SQLite-aware backup when a migration is pending, restarts the server before
+  the host, and verifies service health and migration state. It does not fetch,
+  merge, reset, or switch Git branches.
+
+  ```bash
+  ./update.sh
+  ```
+
+- Direct `systemctl` commands are reserved for diagnosing or recovering a
+  failed update. After correcting the failure, rerun `./update.sh` so the web
+  build and both services are updated together.
+
+### Host identity and credentials
+
+- Preserve the existing host identity in `~/.omnigent/config.yaml`, the host
+  registration in the live database, and the machine-local service credential
+  in `~/.config/omnigent/host.env`.
+- Never delete or regenerate the host ID, remove the host registration, or run
+  a new unauthenticated `omnigent host` command to work around a `401`, `409`,
+  or “already registered” error. Inspect the existing systemd unit, token
+  environment file, and host logs first.
+- Never print, commit, or copy host tokens into the repository or command
+  history. If a service needs the existing token, load it through its protected
+  `EnvironmentFile`.
+
+### Database
+
+- The live service database is `/home/vscunha/.omnigent/chat.db`; it is not the
+  small example or test database in the repository.
+- Before migrations, repairs, lineage changes, or any destructive database
+  action, make a SQLite-aware backup that includes the WAL state. Do not delete,
+  recreate, or reset the live database, and do not edit `alembic_version` by
+  hand as a shortcut.
+- Check the current Alembic revision and database integrity before and after a
+  migration. If the migration head is unexpected, stop and inspect the
+  migration graph and service logs before changing code or data.
+- Keep the service running against the existing database unless the user
+  explicitly authorizes a replacement or reset.
+
+### Workers and branch continuity
+
+- New sessions and child workers must inherit the parent session's active
+  workspace and Git branch. In this installation, Beta workers must use the
+  current checkout, not a fresh `origin/main` checkout.
+- Do not reset, rebase, clean, or checkout another branch in the live workspace
+  to make a worker start. If isolation is necessary, create it from the
+  parent's current branch, preserve the parent's edits, and remove the
+  temporary worktree after the worker finishes.
+- Before dispatching work, confirm the worker workspace and branch. Do not
+  assume that a newly created session automatically points at the latest local
+  feature branch.
+
 ## Pull requests
 
 When you open a pull request, fill in the repo's PR template at
