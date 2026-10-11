@@ -359,6 +359,7 @@ export const ComposerHarnessTrigger = forwardRef<
   },
   ref,
 ) {
+  const hasModelReadout = Boolean(model || effort);
   return (
     <Button
       ref={ref}
@@ -393,15 +394,15 @@ export const ComposerHarnessTrigger = forwardRef<
           when the row collapses. */}
       <span
         className={cn(
-          "inline-flex min-w-0 flex-nowrap items-baseline gap-1",
-          icon != null && COMPOSER_COLLAPSED_LABEL_CLASS,
+          "inline-flex min-w-0 max-w-[9rem] flex-nowrap items-baseline gap-1 md:max-w-[18rem]",
+          icon != null && !hasModelReadout && COMPOSER_COLLAPSED_LABEL_CLASS,
           labelClassName,
         )}
         data-testid={`${testIdPrefix}-agent-config-value`}
       >
         {model && (
           <span
-            className="min-w-0 truncate text-left text-[13px] leading-5 font-medium text-foreground"
+            className="min-w-0 max-w-[7rem] flex-1 truncate text-left text-[13px] leading-5 font-medium text-foreground md:max-w-[16rem]"
             title={model}
             data-testid={`${testIdPrefix}-agent-model-value`}
           >

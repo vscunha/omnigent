@@ -483,35 +483,55 @@ export function HarnessPickerEntry({
 export function HarnessPickerConfigRow({
   label,
   value,
+  effort,
   open,
   onOpenChange,
   isMobile,
   disabled,
   testId,
   valueTestId,
+  effortTestId,
   configTestId,
   children,
 }: {
   label: string;
   value: string;
+  /**
+   * Current reasoning effort, shown beside ``value`` so the level stays
+   * visible without opening the submenu that selects it. ``null``/absent
+   * renders nothing (harnesses with no effort surface).
+   */
+  effort?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   isMobile: boolean;
   disabled?: boolean;
   testId: string;
   valueTestId?: string;
+  effortTestId?: string;
   configTestId: string;
   children: ReactNode;
 }) {
   const content = (
     <>
       <span className="flex-1">{label}</span>
-      <span
-        className="truncate text-right text-muted-foreground"
-        data-testid={valueTestId}
-        title={value}
-      >
-        {value}
+      <span className="flex min-w-0 items-baseline gap-1">
+        <span
+          className="truncate text-right text-muted-foreground"
+          data-testid={valueTestId}
+          title={value}
+        >
+          {value}
+        </span>
+        {effort ? (
+          <span
+            className="shrink-0 text-muted-foreground/70"
+            data-testid={effortTestId}
+            title={effort}
+          >
+            {effort}
+          </span>
+        ) : null}
       </span>
     </>
   );
@@ -519,7 +539,7 @@ export function HarnessPickerConfigRow({
     className:
       "min-h-8 cursor-pointer rounded-lg px-2 text-13 data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50",
     "data-testid": testId,
-    "aria-label": `${label}: ${value}`,
+    "aria-label": effort ? `${label}: ${value}, ${effort}` : `${label}: ${value}`,
     textValue: label,
     disabled,
   };

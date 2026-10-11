@@ -24,8 +24,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { BotIcon, WandSparklesIcon, FileTextIcon, Loader2Icon, XIcon } from "lucide-react";
-import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  BotIcon,
+  WandSparklesIcon,
+  FileTextIcon,
+  Loader2Icon,
+  TriangleAlertIcon,
+  XIcon,
+} from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   composerSendShortcutKeys,
   KeyboardShortcutTooltipContent,
@@ -1171,6 +1178,8 @@ export function ChatPage() {
       costRoutingEligible={costRoutingEligible}
       subagentRoutingEligible={subagentRoutingEligible}
       subAgentLabel={subAgentLabel}
+      sessionModel={activeSession?.modelOverride ?? activeSession?.llmModel ?? null}
+      sessionReasoningEffort={activeSession?.reasoningEffort ?? null}
       wrapperLabel={capabilitySource.labels[WRAPPER_LABEL_KEY] ?? null}
     />
   );
@@ -1343,6 +1352,10 @@ interface MainAgentSurfaceProps {
    * ``subAgentComposerLabel``.
    */
   subAgentLabel: string | null;
+  /** Effective model from the active session snapshot, including read-only children. */
+  sessionModel: string | null;
+  /** Persisted reasoning effort from the active session snapshot. */
+  sessionReasoningEffort: string | null;
   /** The session's ``omnigent.wrapper`` label; see ``ComposerProps``. */
   wrapperLabel: string | null;
 }
@@ -1482,6 +1495,8 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
   costRoutingEligible,
   subagentRoutingEligible,
   subAgentLabel,
+  sessionModel,
+  sessionReasoningEffort,
   wrapperLabel,
 }: MainAgentSurfaceProps) {
   const terminalFirst = useTerminalFirst();
@@ -1804,6 +1819,8 @@ const MainAgentSurface = memo(function MainAgentSurfaceImpl({
             costRoutingEligible={costRoutingEligible}
             subagentRoutingEligible={subagentRoutingEligible}
             subAgentLabel={subAgentLabel}
+            sessionModel={sessionModel}
+            sessionReasoningEffort={sessionReasoningEffort}
             wrapperLabel={wrapperLabel}
             onViewportShrinkPinScroll={pinScrollOnComposerGrowth}
           />
@@ -1966,6 +1983,10 @@ interface ComposerProps {
    * tray above the card. See ``subAgentComposerLabel``.
    */
   subAgentLabel?: string | null;
+  /** Effective model from the active session snapshot, used for child status. */
+  sessionModel?: string | null;
+  /** Persisted reasoning effort from the active session snapshot, used for child status. */
+  sessionReasoningEffort?: string | null;
   /**
    * The session's ``omnigent.wrapper`` label, or ``null`` when it carries
    * none. Only the identity label reads it — to name the vendor running a
@@ -2269,6 +2290,8 @@ function ComposerImpl(
     onShowReconnectHelp,
     costRoutingEligible = false,
     subAgentLabel = null,
+    sessionModel = null,
+    sessionReasoningEffort = null,
     wrapperLabel = null,
     onViewportShrinkPinScroll,
   }: ComposerProps,
@@ -3904,6 +3927,9 @@ function ComposerImpl(
                   modelLabelOptions={modelLabelOptions}
                   modelLabelHostId={composerSession?.hostId}
                   costRoutingEligible={costRoutingEligible}
+                  subAgentLabel={subAgentLabel}
+                  sessionModel={sessionModel}
+                  sessionReasoningEffort={sessionReasoningEffort}
                   // Config changes persist server-side and apply on the next
                   // wake/turn (the runner forward is best-effort), so the gear
                   // stays live wherever a message could be sent — including
@@ -4274,15 +4300,6 @@ export function readOnlyReasonForSessionLabels(
 }
 
 /**
- * A custom (label-less) session resolved to the native Codex harness.
- *
- * Custom YAML agents get no `omnigent.wrapper` presentation label, so the
- * resolved harness is the capability evidence. Any wrapper label — including
- * sub-agent variants like `codex-native-ui-subagent`, which cannot honor
- * mid-session overrides — keeps the label authoritative and skips the
- * fallback.
- */
-/**
  * The wrapper label a session behaves as: its own, else the one its harness
  * implies.
  *
@@ -4543,6 +4560,9 @@ function SessionHarnessPicker({
   modelLabelOptions,
   modelLabelHostId,
   costRoutingEligible,
+  subAgentLabel = null,
+  sessionModel = null,
+  sessionReasoningEffort = null,
   disabled,
   openNonce = 0,
 }: {
@@ -4562,12 +4582,16 @@ function SessionHarnessPicker({
   modelLabelOptions: readonly NativeModelOption[];
   modelLabelHostId: string | null | undefined;
   costRoutingEligible: boolean;
+  subAgentLabel?: string | null;
+  sessionModel?: string | null;
+  sessionReasoningEffort?: string | null;
   disabled: boolean;
   openNonce?: number;
 }) {
   const isMobile = useIsMobileViewport();
   const [menuOpen, setMenuOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const appliedOpenNonce = useRef(0);
   const conversationId = useChatStore((state) => state.conversationId);
   const sessionHarness = useChatStore((state) => state.sessionHarness);
@@ -4577,6 +4601,17 @@ function SessionHarnessPicker({
   const selectedEffort = useSessionEffort();
   const costControlModeOverride = useChatStore((state) => state.costControlModeOverride);
   const routingOn = costRoutingEligible && costControlModeOverride === "on";
+  const isSubAgentSession = subAgentLabel !== null;
+  const childModelLabel = isSubAgentSession
+    ? formatStatusModelLabel(sessionModel, codexModelOptions)
+    : null;
+  const childEffortLabel = isSubAgentSession
+    ? sessionReasoningEffort
+      ? formatStatusEffortLabel(sessionReasoningEffort)
+      : showEffort
+        ? "Default"
+        : null
+    : null;
   const {
     effectiveModel,
     modelLabel,
@@ -4589,12 +4624,30 @@ function SessionHarnessPicker({
     codexModelOptions,
     modelLabelOptions,
     modelLabelHostId,
+    sessionModel,
   );
-  const modelSummary = modelLabelLoading
-    ? "Loading model…"
-    : modelLabelUnavailable
-      ? "Model name unavailable"
-      : modelLabel;
+  const piFallbackModelLabel =
+    modelPickerKind === "pi" && sessionModel
+      ? formatStatusModelLabel(sessionModel, modelLabelOptions)
+      : null;
+  const compactPiModelLabel = (value: string | null): string | null => {
+    if (!value) return null;
+    const providerless = value.slice(value.lastIndexOf("/") + 1);
+    return providerless.replace(/^deepseek-v(\d+(?:\.\d+)?)-flash$/i, "DeepSeek $1");
+  };
+  const piCompactFallbackModelLabel = compactPiModelLabel(piFallbackModelLabel);
+  const piDisplayModelLabel =
+    modelPickerKind === "pi" ? compactPiModelLabel(modelLabel ?? piFallbackModelLabel) : null;
+  const modelSummary =
+    modelPickerKind === "pi" &&
+    piDisplayModelLabel !== null &&
+    (modelLabelLoading || modelLabelUnavailable || modelLabel === null)
+      ? piDisplayModelLabel
+      : modelLabelLoading
+        ? "Loading model…"
+        : modelLabelUnavailable
+          ? "Model name unavailable"
+          : (modelLabel ?? piCompactFallbackModelLabel);
   const nativeAgent =
     nativeCodingAgentForHarness(sessionHarness) ??
     (modelPickerKind ? nativeCodingAgentForHarness(modelPickerKind + "-native") : undefined);
@@ -4615,17 +4668,36 @@ function SessionHarnessPicker({
     showModels,
     showEffort,
   });
-  const effortLabel = showEffort && !routingOn ? formatStatusEffortLabel(selectedEffort) : null;
-  const label = routingOn
-    ? SMART_ROUTING_LABEL
-    : modelLabelLoading
-      ? ""
-      : compactModelTriggerLabel(
-          modelSummary ?? nativeAgent?.displayName ?? harnessLabel ?? "Session",
-        );
+  const effectiveEffort =
+    modelPickerKind === "pi" ? (selectedEffort ?? sessionReasoningEffort) : selectedEffort;
+  const effortLabel =
+    childEffortLabel ??
+    (showEffort && !routingOn ? formatStatusEffortLabel(effectiveEffort) : null);
+  // The effort shown on the picker's first-level row: the live level, or
+  // "Default" when the harness has an effort surface but nothing is pinned.
+  // Routing picks effort per turn, so it shows nothing rather than a stale
+  // level the user never chose.
+  const rowEffortLabel = showEffort && !routingOn ? (effortLabel ?? "Default") : null;
+  // Pi may not have emitted its live thinking-level event yet. Keep the
+  // composer honest by showing its unpinned state rather than leaving the
+  // provider/model readout blank; other harnesses retain their existing
+  // pinned-only behavior. Child snapshots still show their persisted effort
+  // even when the child has no editable effort control.
+  const composerEffortLabel = !routingOn
+    ? (effortLabel ?? (showEffort && modelPickerKind === "pi" ? "Default" : null))
+    : null;
+  const label = isSubAgentSession
+    ? (childModelLabel ?? nativeAgent?.displayName ?? harnessLabel ?? "Session")
+    : routingOn
+      ? SMART_ROUTING_LABEL
+      : modelLabelLoading && piCompactFallbackModelLabel === null
+        ? ""
+        : compactModelTriggerLabel(
+            modelSummary ?? nativeAgent?.displayName ?? harnessLabel ?? "Session",
+          );
   const availableEfforts =
     modelPickerKind === "codex"
-      ? codexEffortLevelsForModel(codexModelOptions, pickerSelectedModel)
+      ? codexEffortLevelsForModel(codexModelOptions, pickerSelectedModel ?? effectiveModel)
       : effortLevels;
   useEffect(() => {
     if (!openNonce || openNonce === appliedOpenNonce.current) return;
@@ -4638,15 +4710,22 @@ function SessionHarnessPicker({
   useEffect(() => {
     setMenuOpen(false);
     setConfigOpen(false);
+    setError(null);
   }, [conversationId]);
   const apply = async (change: () => Promise<unknown>) => {
     if (disabled || busyRef.current || pendingModelChange !== null) return;
     busyRef.current = true;
     setBusy(true);
+    setError(null);
+    const sourceSessionId = useChatStore.getState().conversationId;
     try {
       await change();
-    } catch {
-      // The store rolls back a refused change, so the pill shows what applied.
+    } catch (failure) {
+      if (useChatStore.getState().conversationId === sourceSessionId) {
+        setError(
+          failure instanceof Error ? failure.message : "Unable to update session configuration",
+        );
+      }
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -4775,7 +4854,7 @@ function SessionHarnessPicker({
                 choices: availableEfforts.map((effort) => ({
                   key: effort,
                   label: formatStatusEffortLabel(effort) ?? effort,
-                  checked: !routingOn && effort === selectedEffort,
+                  checked: !routingOn && effort === effectiveEffort,
                   disabled: routingOn || busy || pendingModelChange !== null,
                   onSelect: () => void apply(() => useChatStore.getState().setEffort(effort)),
                   testId: `composer-agent-effort-${effort}`,
@@ -4799,55 +4878,124 @@ function SessionHarnessPicker({
     </>
   );
   return (
-    <HarnessPicker
-      open={menuOpen}
-      onOpenChange={(next) => {
-        if (!next || (!disabled && !busy && configurable)) setMenuOpen(next);
-        if (!next) setConfigOpen(false);
-      }}
-      trigger={{
-        label: "Configure session",
-        model: label,
-        effort: effortLabel ?? undefined,
-        icon: <ComposerAgentIcon agent={iconAgent} />,
-        disabled: busy || !configurable,
-        "aria-disabled": disabled || busy || !configurable,
-        className: disabled ? "cursor-default opacity-50" : undefined,
-        testIdPrefix: "composer",
-        "data-testid": "composer-config-gear",
-        loading: modelLabelLoading && !routingOn,
-        pending:
-          (sessionModelSeeded || pendingModelChange !== null) &&
-          (modelPickerKind === "claude" || modelPickerKind === "codex"),
-      }}
-      tooltip={<ComposerConfigTooltipRows rows={summary} />}
-      tooltipTestId="composer-config-gear-tooltip"
-      testId="composer-agent-menu"
-    >
-      {isMobile && configOpen ? (
-        <HarnessPickerConfigPage
-          backTestId="composer-agent-config-back"
-          testId="composer-agent-config-menu"
-          onBack={() => setConfigOpen(false)}
-        >
-          {configContent}
-        </HarnessPickerConfigPage>
-      ) : (
-        <HarnessPickerConfigRow
-          label={nativeAgent?.displayName ?? harnessLabel ?? "Session"}
-          value={routingOn ? SMART_ROUTING_LABEL : (modelSummary ?? "Default")}
-          open={configOpen}
-          onOpenChange={setConfigOpen}
-          isMobile={isMobile}
-          disabled={busy || pendingModelChange !== null}
-          valueTestId="composer-agent-model-summary"
-          testId="composer-agent-edit"
-          configTestId="composer-agent-config-menu"
-        >
-          {configContent}
-        </HarnessPickerConfigRow>
+    <>
+      <HarnessPicker
+        open={menuOpen}
+        onOpenChange={(next) => {
+          if (!next || (!disabled && !busy && configurable)) setMenuOpen(next);
+          if (!next) setConfigOpen(false);
+        }}
+        trigger={{
+          label: "Configure session",
+          model: label,
+          effort: composerEffortLabel ?? undefined,
+          icon: <ComposerAgentIcon agent={iconAgent} />,
+          disabled: busy || !configurable,
+          "aria-disabled": disabled || busy || !configurable,
+          className: disabled ? "cursor-default opacity-50" : undefined,
+          testIdPrefix: "composer",
+          "data-testid": "composer-config-gear",
+          loading: modelLabelLoading && !routingOn,
+          pending:
+            (sessionModelSeeded || pendingModelChange !== null) &&
+            (modelPickerKind === "claude" || modelPickerKind === "codex"),
+        }}
+        tooltip={<ComposerConfigTooltipRows rows={summary} />}
+        tooltipTestId="composer-config-gear-tooltip"
+        testId="composer-agent-menu"
+      >
+        {isMobile && configOpen ? (
+          <HarnessPickerConfigPage
+            backTestId="composer-agent-config-back"
+            testId="composer-agent-config-menu"
+            onBack={() => setConfigOpen(false)}
+          >
+            {configContent}
+          </HarnessPickerConfigPage>
+        ) : isSubAgentSession ? (
+          // A sub-agent's composer reflects the CHILD's own persisted model and
+          // effort, which the parent's composer cannot edit — the rows are a
+          // read-only summary of the child's snapshot.
+          <>
+            {showModels && (
+              <HarnessPickerConfigRow
+                label="Model"
+                // Child sessions carry their effective model in the persisted
+                // snapshot rather than the live root-session model store.
+                value={
+                  routingOn ? SMART_ROUTING_LABEL : (childModelLabel ?? modelSummary ?? "Default")
+                }
+                open={false}
+                onOpenChange={() => {}}
+                isMobile={isMobile}
+                disabled
+                valueTestId="composer-agent-model-summary"
+                testId="composer-agent-edit"
+                configTestId="composer-agent-config-menu"
+              >
+                {configContent}
+              </HarnessPickerConfigRow>
+            )}
+            {childEffortLabel !== null && (
+              <HarnessPickerConfigRow
+                label={modelPickerKind === "pi" ? "Thinking level" : "Effort"}
+                value={routingOn ? "Automatic" : (effortLabel ?? "Default")}
+                open={false}
+                onOpenChange={() => {}}
+                isMobile={isMobile}
+                disabled
+                testId="composer-agent-effort-select"
+                configTestId="composer-agent-effort-menu"
+              >
+                {configContent}
+              </HarnessPickerConfigRow>
+            )}
+          </>
+        ) : (
+          <HarnessPickerConfigRow
+            label={nativeAgent?.displayName ?? harnessLabel ?? "Session"}
+            value={routingOn ? SMART_ROUTING_LABEL : (modelSummary ?? "Default")}
+            effort={rowEffortLabel}
+            open={configOpen}
+            onOpenChange={setConfigOpen}
+            isMobile={isMobile}
+            disabled={busy || pendingModelChange !== null}
+            valueTestId="composer-agent-model-summary"
+            effortTestId="composer-agent-effort-summary"
+            testId="composer-agent-edit"
+            configTestId="composer-agent-config-menu"
+          >
+            {configContent}
+          </HarnessPickerConfigRow>
+        )}
+      </HarnessPicker>
+      {error && (
+        <TooltipProvider delayDuration={0}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Couldn't update configuration: ${error}`}
+                className="flex size-7 shrink-0 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10"
+                data-testid="composer-config-error"
+              >
+                <TriangleAlertIcon className="size-4" aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              className="w-72 max-w-[calc(100vw-2rem)] flex-col items-start gap-1 rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-menu"
+              data-testid="composer-config-error-tooltip"
+            >
+              <strong className="font-medium">Couldn’t update configuration</strong>
+              <span className="text-xs leading-5 text-muted-foreground">
+                {error} Try again, or reconnect the session if the problem continues.
+              </span>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       )}
-    </HarnessPicker>
+    </>
   );
 }
 
@@ -4924,6 +5072,7 @@ function useResolvedComposerModel(
   codexModelOptions: readonly NativeModelOption[],
   modelLabelOptions: readonly NativeModelOption[],
   hostId: string | null | undefined,
+  sessionModel: string | null,
 ) {
   const sessionId = useChatStore((s) => s.conversationId);
   const agentId = useChatStore((s) => s.boundAgentId);
@@ -4932,6 +5081,11 @@ function useResolvedComposerModel(
   const sessionModelSeeded = useChatStore((s) => s.sessionModelSeeded);
   const llmModel = useChatStore((s) => s.llmModel);
   const nativeVendorOwnsModel = useChatStore((s) => s.nativeVendorOwnsModel);
+  // Pi normally reports its live model through the runner. When that report is
+  // missing, the session snapshot is still an honest fallback for Pi because
+  // it is server-resolved from the session's model metadata.
+  const piSnapshotModel = modelPickerKind === "pi" ? sessionModel?.trim() || null : null;
+  const piObservedModel = modelPickerKind === "pi" ? (llmModel ?? piSnapshotModel) : llmModel;
 
   // Native model pickers populate from the snapshot's runner-backed
   // ``model_options`` field. Claude's rows are the aliases pinned to the
@@ -4988,18 +5142,20 @@ function useResolvedComposerModel(
   // bound default.
   const pickerSelectedModel = isReportedModelPicker
     ? (reportedRowId ?? requestedRowId)
-    : (sessionModelOverride ?? (modelPickerKind === "configured" ? llmModel : null));
+    : modelPickerKind === "pi"
+      ? (sessionModelOverride ?? piObservedModel)
+      : (sessionModelOverride ?? (modelPickerKind === "configured" ? llmModel : null));
   const effectiveModel = sessionModelSeeded
-    ? (sessionModelOverride ?? llmModel)
+    ? (sessionModelOverride ?? piObservedModel)
     : nativeVendorOwnsModel
       ? modelPickerKind === "cursor" || modelPickerKind === "kiro"
         ? sessionModelOverride
         : modelPickerKind === "opencode" || modelPickerKind === "pi" || modelPickerKind === "devin"
-          ? (sessionModelOverride ?? llmModel)
+          ? (sessionModelOverride ?? piObservedModel)
           : null
       : isReportedModelPicker
         ? llmModel
-        : (sessionModelOverride ?? llmModel);
+        : (sessionModelOverride ?? piObservedModel);
   const {
     label: modelLabel,
     loading: modelLabelLoading,

@@ -347,7 +347,7 @@ class AgentObject(BaseModel):
         phases. Empty list when the spec declares no policies
         or when the bundle cannot be loaded.
     :param skills: Skills bundled in the agent spec
-        (``skills/<dir>/SKILL.md``). Lets the Web UI's
+        (``skills/<name>/SKILL.md``). Lets the Web UI's
         new-session composer offer a slash-command menu before a
         session exists. ``GET /skills`` discovers host skills and,
         when given ``session_id``, merges the session's bundled skills.
@@ -904,6 +904,16 @@ class ChildSessionSummary(BaseModel):
         child's ``model_override`` — the field intelligent routing writes
         when it picks a model for a spawned child. ``None`` when the child
         inherits the parent/spec model.
+    :param model_override: Explicit model pinned for this child, including
+        a model selected directly by the caller rather than by Smart Routing.
+        ``None`` when the child inherits the parent/spec model.
+    :param llm_model: The child's effective model resolved from its agent
+        spec (``executor.model``), e.g.
+        ``"opencode-go/deepseek-v4-flash"``. ``None`` when the child has
+        no agent binding or the spec cannot be loaded. Complements
+        :attr:`model_override` / :attr:`routed_model`, which stay ``None``
+        when the child runs the spec default — clients can surface this
+        field so the model label never depends on a pin existing.
     :param routing_decision_id: Identifier of the routing decision that
         produced :attr:`routed_model`, mirroring
         ``RoutingDecisionData.decision_id``. Read from the child's
@@ -931,6 +941,9 @@ class ChildSessionSummary(BaseModel):
     last_message_preview: str | None = None
     pending_elicitations_count: int = 0
     routed_model: str | None = None
+    model_override: str | None = None
+    llm_model: str | None = None
+    reasoning_effort: str | None = None
     routing_decision_id: str | None = None
 
 
@@ -1908,6 +1921,7 @@ class SessionCreateMetadata(BaseModel):
     project_id: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     reasoning_effort: str | None = None
+    model_override: str | None = None
     host_id: str | None = None
     workspace: str | None = None
     terminal_launch_args: list[str] | None = None

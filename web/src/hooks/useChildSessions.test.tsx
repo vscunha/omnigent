@@ -61,6 +61,8 @@ describe("useDescendantSession", () => {
 
     expect(result.current).toBeNull();
     await waitFor(() => expect(result.current?.task_summary).toBe("Investigate auth flow"));
-    expect(authenticatedFetch).toHaveBeenCalledWith("/v1/sessions/conv_parent/child_sessions");
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      "/v1/sessions/conv_parent/child_sessions?limit=1000",
+    );
   });
 });

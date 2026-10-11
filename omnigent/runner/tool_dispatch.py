@@ -3498,18 +3498,9 @@ async def _execute_session_create(
             }
         )
     if has_config_path:
-        # The multipart create carries only the config bundle, so an effort
-        # passed here would never reach the child. Refuse instead of dropping it.
-        if args.get("reasoning_effort") is not None:
-            return json.dumps(
-                {
-                    "error": (
-                        "sys_session_create 'reasoning_effort' is supported only "
-                        "with 'agent_id'; the 'config_path' create cannot carry "
-                        "it. Set the effort in the config you upload instead."
-                    )
-                }
-            )
+        # The multipart metadata carries the optional model and reasoning
+        # effort alongside the uploaded bundle. Keep both create paths
+        # consistent so a bundle child starts with the requested settings.
         return await _session_create_from_config_path(
             str(config_path),
             args,
@@ -3692,6 +3683,12 @@ async def _upload_config_bundle(
     title = args.get("title")
     if isinstance(title, str) and title:
         metadata["title"] = title
+    model = args.get("model")
+    if isinstance(model, str) and model:
+        metadata["model_override"] = model
+    reasoning_effort = args.get("reasoning_effort")
+    if isinstance(reasoning_effort, str) and reasoning_effort:
+        metadata["reasoning_effort"] = reasoning_effort
     try:
         resp = await server_client.post(
             "/v1/sessions",

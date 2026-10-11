@@ -893,6 +893,85 @@ class _ContentCapturingHarnessClient:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("effort", ("high", "max", "ultra"))
+async def test_runner_background_forwards_reasoning_to_harness_body(effort: str) -> None:
+    """The background turn path preserves the inbound reasoning hint.
+
+    The server normally posts without ``?stream=true``, so the runner rebuilds
+    the harness body field by field. ``reasoning`` must survive that rebuild so
+    in-process executors receive the persisted session effort.
+    """
+    from omnigent.runner import app as runner_app
+
+    conv = "conv_background_reasoning"
+
+    def _server_handler(request: httpx.Request) -> httpx.Response:
+        """Return the minimal session snapshot and empty history."""
+        if request.method == "GET" and request.url.path == f"/v1/sessions/{conv}":
+            return httpx.Response(200, json={"id": conv, "agent_id": "ag_reasoning"})
+        if request.url.path.endswith("/items"):
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [],
+                    "first_id": None,
+                    "last_id": None,
+                    "has_more": False,
+                },
+            )
+        return httpx.Response(200, json={})
+
+    server_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    )
+
+    async def _spec_resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        """Resolve a minimal spec for the background turn."""
+        del agent_id, session_id
+        return AgentSpec(
+            spec_version=1,
+            name="reasoning-agent",
+            executor=ExecutorSpec(
+                type="omnigent",
+                config={"harness": "runner-test-resolved"},
+            ),
+        )
+
+    captured: dict[str, Any] = {}
+    reached = asyncio.Event()
+    app = create_runner_app(
+        process_manager=cast(
+            HarnessProcessManager,
+            _ContentCapturingProcessManager(captured, reached),
+        ),
+        spec_resolver=_spec_resolver,
+        server_client=server_client,
+    )
+    runner_app._session_histories_ref.pop(conv, None)
+    try:
+        async with _runner_test_client(app) as http:
+            response = await http.post(
+                f"/v1/sessions/{conv}/events",
+                json={
+                    "type": "message",
+                    "role": "user",
+                    "model": "x",
+                    "reasoning": {"effort": effort},
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            )
+            assert response.status_code == 202
+            await asyncio.wait_for(reached.wait(), timeout=10.0)
+    finally:
+        await server_client.aclose()
+        runner_app._session_histories_ref.pop(conv, None)
+
+    assert captured["body"]["reasoning"] == {"effort": effort}
+
+
+@pytest.mark.asyncio
 async def test_runner_reloads_full_history_on_cold_cache_after_restart() -> None:
     """A message to a cold session reloads prior history, not just itself.
 
@@ -3988,20 +4067,26 @@ def _spec_with_subagent_harness(harness: str) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("harness", "model"),
+    ("harness", "model", "effort"),
     [
-        pytest.param("claude-native", "databricks-claude-sonnet-4-6", id="claude-native"),
-        pytest.param("codex-native", "databricks-gpt-5-4", id="codex-native"),
-        pytest.param("claude-sdk", "databricks-claude-sonnet-4-6", id="claude-sdk"),
+        pytest.param("claude-native", "databricks-claude-sonnet-4-6", "high", id="claude-native"),
+        pytest.param("codex-native", "databricks-gpt-5-4", "high", id="codex-native"),
+        pytest.param("claude-sdk", "databricks-claude-sonnet-4-6", "high", id="claude-sdk"),
+        pytest.param("pi-native", "openai-codex/gpt-5.6-luna", "high", id="pi-native"),
+        pytest.param(
+            "opencode-native", "opencode-go/deepseek-v4.1-flash", None, id="opencode-native"
+        ),
     ],
 )
 async def test_sys_session_send_model_lands_in_child_create_body(
     monkeypatch: pytest.MonkeyPatch,
     harness: str,
     model: str,
+    effort: str | None,
 ) -> None:
     """
-    A per-dispatch ``model`` reaches the child create as ``model_override``.
+    Per-dispatch ``model`` and ``reasoning_effort`` reach the child create
+    as session overrides.
 
     The server persists ``model_override`` on the child row, where the
     native launch paths read it as ``--model`` and the SDK harness path
@@ -4012,6 +4097,7 @@ async def test_sys_session_send_model_lands_in_child_create_body(
     :param monkeypatch: Pytest monkeypatch fixture.
     :param harness: Declared sub-agent harness under test.
     :param model: Family-appropriate model id for *harness*.
+    :param effort: Supported effort override, or ``None`` for a model-only harness.
     """
     from omnigent.runner import app as runner_app
     from omnigent.runner.tool_dispatch import execute_tool
@@ -4050,6 +4136,7 @@ async def test_sys_session_send_model_lands_in_child_create_body(
                         "args": {
                             "input": "fix the auth bug",
                             "model": model,
+                            **({"reasoning_effort": effort} if effort is not None else {}),
                         },
                     }
                 ),
@@ -4068,6 +4155,7 @@ async def test_sys_session_send_model_lands_in_child_create_body(
     # server persists and the harness launch consumes.
     assert len(create_bodies) == 1, "fresh named send must create exactly one child"
     assert create_bodies[0]["model_override"] == model
+    assert create_bodies[0].get("reasoning_effort") == effort
     assert create_bodies[0]["sub_agent_name"] == "worker"
 
 
@@ -8415,7 +8503,13 @@ async def test_sys_session_create_bundle_mode_uploads_child_under_caller(
         output = await execute_tool(
             tool_name="sys_session_create",
             arguments=json.dumps(
-                {"config_path": "helper.yaml", "title": "auth", "message": "start"}
+                {
+                    "config_path": "helper.yaml",
+                    "title": "auth",
+                    "message": "start",
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "high",
+                }
             ),
             server_client=server_client,
             conversation_id="conv_caller",
@@ -8428,7 +8522,12 @@ async def test_sys_session_create_bundle_mode_uploads_child_under_caller(
         f"expected exactly one create POST, got {len(create_requests)}"
     )
     parts = _parse_multipart_create(create_requests[0])
-    assert parts["metadata"] == {"parent_session_id": "conv_caller", "title": "auth"}
+    assert parts["metadata"] == {
+        "parent_session_id": "conv_caller",
+        "title": "auth",
+        "model_override": "gpt-5.6-luna",
+        "reasoning_effort": "high",
+    }
 
     # The uploaded bundle is a gzipped tar holding the authored config
     # verbatim — proves the local file traversed materialize → tar.

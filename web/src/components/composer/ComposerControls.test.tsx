@@ -79,9 +79,32 @@ describe("shared composer controls", () => {
     );
     expect(screen.getByTestId("composer-agent-effort-value")).not.toHaveClass("hidden");
     expect(screen.getByTestId("product-icon")).toBeInTheDocument();
-    expect(screen.getByTestId("composer-agent-config-value")).toHaveClass(
+    expect(screen.getByTestId("composer-agent-config-value")).not.toHaveClass(
       COMPOSER_COLLAPSED_LABEL_CLASS,
     );
+    expect(screen.getByTestId("composer-agent-model-value")).toHaveClass(
+      "max-w-[7rem]",
+      "md:max-w-[16rem]",
+    );
+  });
+
+  it("keeps a long model and effort readout visible when the action row collapses", () => {
+    render(
+      <ComposerHarnessTrigger
+        label="Pi configuration"
+        model="deepseek-v4.1-flash"
+        effort="Max"
+        icon={<span data-testid="product-icon" />}
+      />,
+    );
+    expect(screen.getByTestId("composer-agent-config-value")).not.toHaveClass(
+      COMPOSER_COLLAPSED_LABEL_CLASS,
+    );
+    expect(screen.getByTestId("composer-agent-model-value")).toHaveAttribute(
+      "title",
+      "deepseek-v4.1-flash",
+    );
+    expect(screen.getByTestId("composer-agent-effort-value")).toHaveTextContent("Max");
   });
 
   it("keeps an icon-less model label visible when the action row collapses", () => {

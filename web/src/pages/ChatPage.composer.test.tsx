@@ -1958,6 +1958,7 @@ describe("Composer model/effort label", () => {
         {...composerProps({
           modelPickerKind: "claude",
           showModels: true,
+          showEffort: true,
           codexModelOptions: [
             { id: "opus", model: "system.ai.claude-opus-4-6", displayName: "Opus" },
           ],
@@ -1970,7 +1971,7 @@ describe("Composer model/effort label", () => {
     expect(menu.queryByText("Harnesses")).toBeNull();
     expect(menu.queryByText("Edit")).toBeNull();
     expect(menu.getAllByRole("menuitem")).toHaveLength(1);
-    const row = menu.getByRole("menuitem", { name: "Claude Code: Opus" });
+    const row = menu.getByRole("menuitem", { name: "Claude Code: Opus, xHigh" });
     expect(within(row).getByText("Opus")).toHaveClass("text-right");
     expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
     fireEvent.keyDown(row, { key: "ArrowRight" });
@@ -2005,6 +2006,120 @@ describe("Composer model/effort label", () => {
     // Model black, effort grey.
     expect(within(label()).getByText("Opus")).toHaveClass("text-foreground");
     expect(within(label()).getByText("High")).toHaveClass("text-muted-foreground");
+  });
+
+  it("shows a read-only child snapshot model and effort even without picker controls", () => {
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          subAgentLabel: "worker",
+          sessionModel: "gpt-5-6-luna",
+          sessionReasoningEffort: "high",
+          showModels: false,
+          showEffort: false,
+          modelPickerKind: "codex",
+          readOnlyReason: "Sub-agent sessions are read-only",
+        })}
+      />,
+    );
+
+    expect(label()).toHaveTextContent("gpt-5.6-lunaHigh");
+    expect(within(label()).getByText("gpt-5.6-luna")).toHaveClass("text-foreground");
+    expect(within(label()).getByText("High")).toHaveClass("text-muted-foreground");
+  });
+
+  it("shows the child snapshot model in the open harness modal", () => {
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          subAgentLabel: "worker",
+          sessionModel: "gpt-5-6-luna",
+          sessionReasoningEffort: "high",
+          showModels: true,
+          showEffort: false,
+          modelPickerKind: "codex",
+        })}
+      />,
+    );
+
+    openSessionConfig();
+
+    // The child's snapshot model and effort are shown read-only in the modal's
+    // separate Model / Effort rows even though it has no picker controls.
+    expect(
+      within(screen.getByTestId("composer-agent-model-summary")).getByText("gpt-5.6-luna"),
+    ).toBeVisible();
+    expect(
+      within(screen.getByTestId("composer-agent-effort-select")).getByText("High"),
+    ).toBeVisible();
+  });
+
+  it("shows Default reasoning for a child with no persisted override", () => {
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          subAgentLabel: "worker",
+          sessionModel: "gpt-5-6-luna",
+          sessionReasoningEffort: null,
+          showModels: false,
+          showEffort: true,
+          modelPickerKind: "codex",
+          readOnlyReason: "Sub-agent sessions are read-only",
+        })}
+      />,
+    );
+    expect(label()).toHaveTextContent("gpt-5.6-lunaDefault");
+    expect(within(label()).getByText("Default")).toHaveClass("text-muted-foreground");
+  });
+
+  it("falls back to the Pi snapshot model and effort when live events are absent", () => {
+    useChatStore.setState({
+      llmModel: null,
+      sessionReasoningEffort: null,
+      sessionHarness: "pi-native",
+    });
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          modelPickerKind: "pi",
+          showModels: true,
+          showEffort: true,
+          sessionModel: "opencode-go/deepseek-v4.1-flash",
+          sessionReasoningEffort: "max",
+          effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+          codexModelOptions: [
+            {
+              id: "opencode-go/deepseek-v4.1-flash",
+              displayName: "DeepSeek V4.1 Flash",
+            },
+          ],
+        })}
+      />,
+    );
+    expect(label()).toHaveTextContent("DeepSeek V4.1 Flash");
+    expect(label()).toHaveTextContent("Max");
+  });
+
+  it("keeps a qualified Pi fallback visible while its catalog is empty", () => {
+    useChatStore.setState({
+      llmModel: null,
+      sessionReasoningEffort: null,
+      sessionHarness: "pi-native",
+    });
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          modelPickerKind: "pi",
+          showModels: true,
+          showEffort: true,
+          sessionModel: "opencode-go/deepseek-v4.1-flash",
+          sessionReasoningEffort: "max",
+          modelLabelOptions: [],
+        })}
+      />,
+    );
+    expect(label()).toHaveTextContent("DeepSeek 4.1");
+    expect(label()).toHaveTextContent("Max");
   });
 
   it("shows no effort when the session uses its default", () => {
@@ -5868,7 +5983,7 @@ describe("Composer config gear", () => {
     expect(calls).toEqual(["model", "effort"]);
   });
 
-  it("leaves no lingering error indicator when a session config update fails", async () => {
+  it("shows a recoverable error indicator when a session config update fails", async () => {
     const setModel = vi.fn().mockRejectedValue(new Error("Host stopped responding"));
     const options = [
       { id: "opus", model: "opus", displayName: "Opus" },
@@ -5893,8 +6008,10 @@ describe("Composer config gear", () => {
     await waitFor(() =>
       expect(screen.getByTestId("composer-agent-edit")).not.toHaveAttribute("data-disabled"),
     );
-    expect(screen.queryByTestId("composer-config-error")).not.toBeInTheDocument();
-    expect(screen.queryByText("Host stopped responding")).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-config-error")).toHaveAttribute(
+      "aria-label",
+      "Couldn't update configuration: Host stopped responding",
+    );
   });
 
   it("recomputes the Codex effort ladder after a confirmed model change and drops an unsupported level", async () => {
