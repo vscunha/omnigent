@@ -32,11 +32,14 @@ const TASK_WIRE = {
   rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
   owner_user_id: "alice",
   agent_id: "ag_1",
+  project_id: null,
   timezone: "America/New_York",
   created_at: 1_700_000_000,
   updated_at: 1_700_000_100,
   model_override: null,
   reasoning_effort: null,
+  permission_mode: null,
+  agent_session_control: false,
   workspace: null,
   host_id: null,
   execution_target: "connected_host",
@@ -71,6 +74,7 @@ describe("listScheduledTasks", () => {
       state: "active",
       hostId: null,
       workspace: null,
+      agentSessionControl: false,
     });
   });
 
@@ -156,11 +160,25 @@ describe("createScheduledTask", () => {
       timezone: "UTC",
       hostId: "host_1",
       workspace: "/home/me/repo",
+      agentSessionControl: true,
     });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.timezone).toBe("UTC");
     expect(body.host_id).toBe("host_1");
     expect(body.workspace).toBe("/home/me/repo");
+    expect(body.agent_session_control).toBe(true);
+  });
+
+  it("includes a selected project", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(TASK_WIRE));
+    await createScheduledTask({
+      name: "n",
+      prompt: "p",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      agentId: "ag_1",
+      projectId: "project_1",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).project_id).toBe("project_1");
   });
 });
 
@@ -173,6 +191,22 @@ describe("updateScheduledTask", () => {
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body)).toEqual({ state: "paused" });
     expect(updated.state).toBe("paused");
+  });
+
+  it("PATCHes the session-control toggle when present", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ ...TASK_WIRE, agent_session_control: false }));
+
+    await updateScheduledTask("st_1", { agentSessionControl: false });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      agent_session_control: false,
+    });
+  });
+
+  it("can clear a selected project", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ ...TASK_WIRE, project_id: null }));
+    await updateScheduledTask("st_1", { projectId: null });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ project_id: null });
   });
 });
 

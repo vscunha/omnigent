@@ -41,7 +41,9 @@ class SysScheduledTaskCreateTool(Tool):
             "on a recurring schedule (RRULE). Provide the agent to run, the "
             "prompt to send it, and the recurrence rule. The workspace is always "
             "optional and defaults to the launch host's home directory (fine for "
-            "MCP-only / chat tasks that touch no code directory). Optionally PIN "
+            "MCP-only / chat tasks that touch no code directory); when the task "
+            "files into a project and pins no workspace, the project's configured "
+            "default workspace is used instead. Optionally PIN "
             "a connected host and/or a workspace on it; with no pinned host it "
             "runs on your live host at fire time (the owner must have an online "
             "host then, else the run is recorded as failed). The task fires "
@@ -76,6 +78,14 @@ class SysScheduledTaskCreateTool(Tool):
                                 "sys_agent_list or sys_agent_get."
                             ),
                         },
+                        "project_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional project to file each fired session into. "
+                                "When set and no workspace is pinned, the project's "
+                                "configured default workspace is used at fire time."
+                            ),
+                        },
                         "timezone": {
                             "type": "string",
                             "description": (
@@ -102,6 +112,14 @@ class SysScheduledTaskCreateTool(Tool):
                                 "Runs are unattended, so a prompting mode ('default'/'plan') "
                                 "stalls waiting for approval — prefer an auto-running mode. "
                                 "Omit for the agent default."
+                            ),
+                        },
+                        "agent_session_control": {
+                            "type": "boolean",
+                            "description": (
+                                "Allow each fired session to message or retry other "
+                                "permitted sessions and post user Inbox notifications. "
+                                "Enable only for supervisory automations."
                             ),
                         },
                         "max_cost_usd": {
@@ -223,6 +241,14 @@ class SysScheduledTaskUpdateTool(Tool):
                                 "across a switch: resend any you want set."
                             ),
                         },
+                        "project_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional project to file each fired session into. "
+                                "When set and no workspace is pinned, the project's "
+                                "configured default workspace is used at fire time."
+                            ),
+                        },
                         "timezone": {"type": "string", "description": "New IANA timezone."},
                         "model_override": {"type": "string", "description": "New model override."},
                         "reasoning_effort": {
@@ -235,6 +261,12 @@ class SysScheduledTaskUpdateTool(Tool):
                                 "New permission mode for native coding agents (Claude "
                                 "Code): 'default', 'auto', 'acceptEdits', 'plan', "
                                 "'dontAsk', or 'bypassPermissions'."
+                            ),
+                        },
+                        "agent_session_control": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether future runs may supervise other permitted sessions."
                             ),
                         },
                         "max_cost_usd": {

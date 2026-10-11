@@ -54,6 +54,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
+from omnigent._session_labels import SCHEDULED_AGENT_SESSION_CONTROL_LABEL
 from omnigent.db.account_authority import account_authority_scope
 from omnigent.db.db_models import workspace_scope
 from omnigent.entities import Conversation, ScheduledTask
@@ -63,12 +64,13 @@ from omnigent.server.auth import LEVEL_OWNER, LEVEL_READ, RESERVED_USER_LOCAL, R
 from omnigent.server.bundles import agent_for_user
 from omnigent.server.host_registry import host_owner_scope
 from omnigent.server.routes._session_create_validation import (
+    resolve_project_session_create,
     validate_existing_host_workspace,
     validate_session_agent,
     validate_session_model_metadata,
     validate_session_permission_mode,
 )
-from omnigent.server.schemas import SessionEventInput
+from omnigent.server.schemas import SessionCreateRequest, SessionEventInput
 
 _logger = logging.getLogger(__name__)
 
@@ -141,6 +143,7 @@ class FireDeps:
     tunnel_registry: Any | None = None
     file_store: Any | None = None
     artifact_store: Any | None = None
+    project_store: Any | None = None
     # Managed-sandbox execution target. Both are needed to provision a fresh
     # sandbox per fire; ``None`` when the server has no ``sandbox:`` config, in
     # which case a ``managed_sandbox`` task records a failed run.
@@ -456,8 +459,18 @@ async def _run_fire_for_task(
                 )
                 return
 
-        # Check connected-host workspaces, including the resolved HOME default,
-        # against the agent's cwd boundary. A new sandbox has no workspace yet.
+        # Validate the RESOLVED host/workspace. ``effective.workspace`` is always
+        # an absolute realpath by this point — a caller-supplied path or the
+        # canonicalized default (HOME). Gating on ``effective.workspace`` (not the
+        # stored ``task.workspace``) means the agent's ``os_env.cwd`` boundary is
+        # enforced even for a defaulted workspace, exactly as ``POST /v1/sessions``
+        # does — an agent that pins an absolute cwd outside HOME records a failed
+        # run instead of silently launching outside its declared boundary.
+        # Scheduled tasks may pin a project; when they do and no workspace is
+        # pinned, the project's configured default workspace is filled by
+        # ``resolve_project_session_create`` during resolution, mirroring
+        # POST /v1/sessions ownership/default-fill semantics. A new sandbox has
+        # no workspace yet, so only connected-host preflight checks the boundary.
         validate_workspace = preflight is not None and effective.workspace is not None
         validation_error = await _validate_fire_session_inputs(
             deps, effective, validate_workspace=validate_workspace
@@ -577,9 +590,12 @@ async def _resolve_effective_task(deps: FireDeps, task: ScheduledTask) -> Schedu
     * ``host_id`` unset → the owner's most-recently-active ONLINE host. No live
       host (or no host store/registry) raises :class:`_CannotLaunchScheduledFire`
       so the caller records a failed run instead of silently no-oping.
-    * ``workspace`` unset → the launch host's home directory, canonicalized to an
-      absolute realpath via a ``host.stat`` round-trip, so the runner launches
-      with a real cwd and the stored row never holds a literal ``~``. This HOME
+    * ``workspace`` unset → when the task pins a ``project_id``, the project's
+      configured default workspace (via ``resolve_project_session_create``);
+      otherwise the launch host's home directory, canonicalized to an absolute
+      realpath via a ``host.stat`` round-trip, so the runner launches with a
+      real cwd and the stored row never holds a literal ``~``. Missing/foreign
+      projects and an unconfigured project store record a failed run. This HOME
       default applies whether the host was pinned or resolved above.
 
     A pinned ``host_id`` is left untouched — not re-resolved — and its liveness is
@@ -598,6 +614,8 @@ async def _resolve_effective_task(deps: FireDeps, task: ScheduledTask) -> Schedu
     if host_id is None:
         host_id = await _resolve_owner_host(deps, task)
     workspace = task.workspace
+    if workspace is None and task.project_id is not None:
+        workspace = await _resolve_project_workspace(deps, task)
     if workspace is None:
         # Authorize a PINNED host's ownership BEFORE the home-dir stat below.
         # ``_resolve_default_workspace`` issues a ``host.stat`` RPC to the host,
@@ -617,6 +635,25 @@ async def _resolve_effective_task(deps: FireDeps, task: ScheduledTask) -> Schedu
     if host_id is task.host_id and workspace is task.workspace:
         return task
     return replace(task, host_id=host_id, workspace=workspace)
+
+
+async def _resolve_project_workspace(deps: FireDeps, task: ScheduledTask) -> str | None:
+    """Resolve a pinned project's configured default workspace, if any.
+
+    Routes through the shared create resolver so ownership/default-fill matches
+    ``POST /v1/sessions``. A missing/foreign project or an unconfigured project
+    store (an ``OmnigentError``) becomes :class:`_CannotLaunchScheduledFire` so
+    the caller records a failed run; the resolved value is never stored back.
+    """
+    owner_id = task.user_id if task.user_id and task.user_id != RESERVED_USER_LOCAL else None
+    body = SessionCreateRequest(agent_id=task.agent_id, project_id=task.project_id)
+    try:
+        resolution = await resolve_project_session_create(
+            body=body, user_id=owner_id, project_store=deps.project_store
+        )
+    except OmnigentError as exc:
+        raise _CannotLaunchScheduledFire(str(exc), error_code=exc.code) from exc
+    return resolution.body.workspace
 
 
 async def _resolve_owner_host(deps: FireDeps, task: ScheduledTask) -> str:
@@ -856,7 +893,17 @@ async def _create_session(deps: FireDeps, task: ScheduledTask) -> Conversation:
         title=task.name,
         host_id=task.host_id,
         workspace=task.workspace,
+        project_id=task.project_id,
         terminal_launch_args=await _permission_mode_launch_args(deps, task),
+    )
+    await asyncio.to_thread(
+        deps.conversation_store.set_labels,
+        conv.id,
+        {
+            SCHEDULED_AGENT_SESSION_CONTROL_LABEL: (
+                "true" if task.agent_session_control else "false"
+            )
+        },
     )
     reasoning_effort = task.reasoning_effort
     if reasoning_effort is None:

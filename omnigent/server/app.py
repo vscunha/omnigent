@@ -1781,6 +1781,7 @@ def create_app(
                 tunnel_registry=tunnel_registry,
                 file_store=file_store,
                 artifact_store=artifact_store,
+                project_store=project_store,
                 # Managed-sandbox execution target: provision a fresh sandbox per
                 # fire. ``managed_launches`` is created during app construction
                 # (before this lifespan runs), so it is already on state here.
@@ -3488,6 +3489,7 @@ def create_app(
                 agent_store=agent_store,
                 conversation_store=conversation_store,
                 permission_store=permission_store,
+                project_store=project_store,
                 agent_cache=agent_cache,
                 auth_provider=auth_provider,
                 artifact_store=artifact_store,

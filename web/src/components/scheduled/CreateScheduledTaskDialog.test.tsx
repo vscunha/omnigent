@@ -18,6 +18,7 @@ import {
   shouldGuardDialogDismiss,
 } from "./CreateScheduledTaskDialog";
 import * as agentsHook from "@/hooks/useAvailableAgents";
+import * as conversationsHook from "@/hooks/useConversations";
 import * as hostsHook from "@/hooks/useHosts";
 import * as scheduledHooks from "@/hooks/useScheduledTasks";
 import type { AvailableAgent } from "@/hooks/useAvailableAgents";
@@ -25,8 +26,9 @@ import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
 import { SERVER_INFO_OFFLINE_FALLBACK } from "@/lib/bootCapabilities";
 
 vi.mock("@/hooks/useAvailableAgents", () => ({ useAvailableAgents: vi.fn() }));
+vi.mock("@/hooks/useConversations", () => ({ useProjects: vi.fn() }));
 // useHostModelOptions is consumed by the ModelEffortFields sub-form (model
-// dropdown source). Returning no data makes it fall back to the static Claude
+// dropdown source). Returning no data makes it fall back to the static native
 // alias list, which is what a no-host-pinned scheduled task uses anyway.
 vi.mock("@/hooks/useHosts", () => ({
   useHosts: vi.fn(),
@@ -49,8 +51,8 @@ vi.mock("@/shell/WorkspacePicker", () => ({
 // Stub the heavy shared picker: expose buttons that drive the exact callbacks
 // the dialog wires (select an entry, set model/effort knobs, toggle open state)
 // so we can test the dialog's selection→payload mapping + dismiss-guard without
-// the real Radix menu / QueryClient. Two entries mirror the two mapping cases:
-// a bare harness (claude-native-ui) and a plain agent (polly).
+// the real Radix menu / QueryClient. The entries mirror the native harnesses
+// and plain-agent mapping cases.
 vi.mock("@/shell/NewChatDialog", () => ({
   AgentHarnessPicker: ({
     onSelectAgent,
@@ -101,6 +103,38 @@ vi.mock("@/shell/NewChatDialog", () => ({
       </button>
       <button
         type="button"
+        data-testid="pick-harness-codex"
+        onClick={() =>
+          onSelectAgent({
+            id: "ag_codex_native",
+            name: "codex-native-ui",
+            display_name: "Codex",
+            description: null,
+            harness: "codex-native",
+            skills: [],
+          })
+        }
+      >
+        pick codex harness
+      </button>
+      <button
+        type="button"
+        data-testid="pick-harness-pi"
+        onClick={() =>
+          onSelectAgent({
+            id: "ag_pi_native",
+            name: "pi-native-ui",
+            display_name: "Pi",
+            description: null,
+            harness: "pi-native",
+            skills: [],
+          })
+        }
+      >
+        pick pi harness
+      </button>
+      <button
+        type="button"
         data-testid="pick-agent-polly"
         onClick={() =>
           onSelectAgent(
@@ -120,15 +154,16 @@ vi.mock("@/shell/NewChatDialog", () => ({
   ),
 }));
 
-// nativeAgentHasCapability(claude-native, "permissionMode") must be true so the
-// model/effort knobs map onto the payload; polly (claude-sdk) has no knobs.
+// Claude and Pi have scheduled controls; other harnesses use agent defaults.
 vi.mock("@/lib/nativeCodingAgents", async (orig) => {
   const actual = await orig<typeof NativeCodingAgentsModule>();
   return {
     ...actual,
-    isNativeCodingAgent: (a: AvailableAgent) => a?.name === "claude-native-ui",
+    isNativeCodingAgent: (a: AvailableAgent) =>
+      a?.name === "claude-native-ui" || a?.name === "codex-native-ui" || a?.name === "pi-native-ui",
     nativeAgentHasCapability: (a: AvailableAgent | undefined | null, cap: string) =>
-      a?.name === "claude-native-ui" && cap === "permissionMode",
+      (a?.name === "claude-native-ui" && (cap === "permissionMode" || cap === "modelPicker")) ||
+      (a?.name === "pi-native-ui" && cap === "modelPicker"),
   };
 });
 
@@ -137,6 +172,14 @@ const AGENTS: AvailableAgent[] = [
   testAgent("ag_claude_native", "claude-native-ui", {
     display_name: "Claude Code",
     harness: "claude-native",
+  }),
+  testAgent("ag_codex_native", "codex-native-ui", {
+    display_name: "Codex",
+    harness: "codex-native",
+  }),
+  testAgent("ag_pi_native", "pi-native-ui", {
+    display_name: "Pi",
+    harness: "pi-native",
   }),
 ];
 
@@ -152,6 +195,12 @@ beforeEach(() => {
   vi.mocked(hostsHook.useHosts).mockReturnValue({
     data: [{ host_id: "host_1", name: "laptop", owner: "me", status: "online" }],
   } as unknown as ReturnType<typeof hostsHook.useHosts>);
+  vi.mocked(hostsHook.useHostModelOptions).mockReturnValue({
+    data: undefined,
+  } as unknown as ReturnType<typeof hostsHook.useHostModelOptions>);
+  vi.mocked(conversationsHook.useProjects).mockReturnValue({
+    data: [],
+  } as unknown as ReturnType<typeof conversationsHook.useProjects>);
   vi.mocked(scheduledHooks.useCreateScheduledTask).mockReturnValue({
     mutateAsync,
     isPending: false,
@@ -187,12 +236,14 @@ function scheduledTask(overrides: Partial<ScheduledTasksApiModule.ScheduledTask>
     rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=30",
     ownerUserId: null,
     agentId: "ag_1",
+    projectId: null,
     timezone: "America/Los_Angeles",
     createdAt: 1,
     updatedAt: 2,
     modelOverride: null,
     reasoningEffort: null,
     permissionMode: null,
+    agentSessionControl: false,
     workspace: null,
     hostId: null,
     executionTarget: "connected_host",
@@ -258,7 +309,10 @@ describe("agent picker readiness (needs-setup badges)", () => {
     renderDialog();
 
     const picker = screen.getByTestId("agent-picker-stub");
-    expect(picker).toHaveAttribute("data-harness-entries", "claude-native-ui,jcode,grok");
+    expect(picker).toHaveAttribute(
+      "data-harness-entries",
+      "claude-native-ui,codex-native-ui,pi-native-ui,jcode,grok",
+    );
     expect(picker).toHaveAttribute("data-agent-entries", "polly");
   });
 });
@@ -276,6 +330,41 @@ describe("CreateScheduledTaskDialog validation", () => {
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByTestId("task-prompt-input"), { target: { value: "Do it" } });
     expect(submit).toBeEnabled();
+  });
+
+  it("submits the explicit session-supervision opt-in", async () => {
+    renderDialog();
+    const toggle = screen.getByRole("switch", { name: "Allow session supervision" });
+    expect(toggle).not.toBeChecked();
+
+    fireEvent.click(toggle);
+    fireEvent.change(screen.getByTestId("task-name-input"), {
+      target: { value: "Manager" },
+    });
+    fireEvent.change(screen.getByTestId("task-prompt-input"), {
+      target: { value: "Inspect the orchestrator" },
+    });
+    fireEvent.click(screen.getByTestId("create-scheduled-task-submit"));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0][0].agentSessionControl).toBe(true);
+  });
+
+  it("submits the selected project", async () => {
+    vi.mocked(conversationsHook.useProjects).mockReturnValue({
+      data: [{ id: "project_1", name: "Manager runs" }],
+    } as unknown as ReturnType<typeof conversationsHook.useProjects>);
+    renderDialog();
+    fireEvent.change(screen.getByTestId("task-name-input"), { target: { value: "Manager" } });
+    fireEvent.change(screen.getByTestId("task-prompt-input"), {
+      target: { value: "Inspect the orchestrator" },
+    });
+    fireEvent.click(screen.getByTestId("task-project-trigger"));
+    fireEvent.click(await screen.findByRole("option", { name: "Manager runs" }));
+    fireEvent.click(screen.getByTestId("create-scheduled-task-submit"));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0][0].projectId).toBe("project_1");
   });
 
   it("pins a workspace only after the full-screen browser confirms", () => {
@@ -396,6 +485,24 @@ describe("CreateScheduledTaskDialog edit mode", () => {
     expect(input.permissionMode).toBeNull();
   });
 
+  it("seeds and updates the session-supervision toggle", async () => {
+    render(
+      <CreateScheduledTaskDialog
+        open
+        onOpenChange={vi.fn()}
+        editingTask={scheduledTask({ agentSessionControl: true })}
+      />,
+    );
+    const toggle = screen.getByRole("switch", { name: "Allow session supervision" });
+    expect(toggle).toBeChecked();
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId("create-scheduled-task-submit"));
+
+    await waitFor(() => expect(updateMutateAsync).toHaveBeenCalledTimes(1));
+    expect(updateMutateAsync.mock.calls[0][0].input.agentSessionControl).toBe(false);
+  });
+
   it("round-trips non-quarter-hour edit times through the update payload", async () => {
     render(
       <CreateScheduledTaskDialog
@@ -433,6 +540,7 @@ describe("CreateScheduledTaskDialog edit mode", () => {
         prompt: "Updated prompt",
         rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=30",
         timezone: "America/Los_Angeles",
+        agentSessionControl: false,
       },
     });
   });
@@ -851,9 +959,87 @@ describe("CreateScheduledTaskDialog model + effort controls", () => {
     expect(screen.queryByTestId("task-model-trigger")).not.toBeInTheDocument();
     expect(screen.queryByTestId("task-effort-trigger")).not.toBeInTheDocument();
     // The "uses defaults" hint returns when the controls are hidden.
-    expect(
-      screen.getByText("Uses this agent's default model, effort, and permission settings"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Uses this agent's default model and effort")).toBeInTheDocument();
+  });
+
+  it("uses agent defaults for Codex tasks without offering Claude controls", () => {
+    renderDialog();
+    fireEvent.click(screen.getByTestId("pick-harness-codex"));
+
+    expect(screen.queryByTestId("task-model-effort-field")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("task-permission-trigger")).not.toBeInTheDocument();
+    expect(screen.getByText("Uses this agent's default model and effort")).toBeInTheDocument();
+  });
+
+  it("shows model + effort (no permission) for Pi with the Pi thinking ladder", async () => {
+    // Pi renders the shared sub-form with its own host-resolved catalog and
+    // the static Pi effort ladder — no permission row, no Claude aliases.
+    renderDialog();
+    fireEvent.click(screen.getByTestId("pick-harness-pi"));
+
+    expect(screen.getByTestId("task-model-effort-field")).toBeInTheDocument();
+    expect(screen.getByTestId("task-model-trigger")).toBeInTheDocument();
+    expect(screen.getByTestId("task-effort-trigger")).toBeInTheDocument();
+    expect(screen.queryByTestId("task-permission-trigger")).not.toBeInTheDocument();
+
+    // No host is pinned in the dialog, so the Pi model picker offers Default
+    // only (Pi models are host-enumerated); the effort ladder is static.
+    fireEvent.keyDown(screen.getByTestId("task-effort-trigger"), { key: "Enter" });
+    expect(await screen.findByRole("option", { name: "Minimal" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Ultra" })).not.toBeInTheDocument();
+  });
+
+  it("lists the catalog host's Pi models even when the task pins no host", async () => {
+    // Pi models are host-enumerated, so a task that pins no host still needs a
+    // catalog — otherwise the picker degrades to Default-only for exactly those
+    // tasks (and shows the full list only for host-pinned ones).
+    vi.mocked(hostsHook.useHostModelOptions).mockReturnValue({
+      data: [
+        { id: "opencode-go/kimi-k2.6", displayName: "Kimi K2.6" },
+        { id: "openai-codex/gpt-5.6-luna", displayName: "GPT-5.6 Luna" },
+      ],
+    } as unknown as ReturnType<typeof hostsHook.useHostModelOptions>);
+
+    renderDialog();
+    fireEvent.click(screen.getByTestId("pick-harness-pi"));
+
+    fireEvent.keyDown(screen.getByTestId("task-model-trigger"), { key: "Enter" });
+    expect(await screen.findByRole("option", { name: "Kimi K2.6" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "GPT-5.6 Luna" })).toBeInTheDocument();
+    // Resolved against the readiness host; the task's own host stays unset.
+    expect(hostsHook.useHostModelOptions).toHaveBeenCalledWith("host_1", "pi-native", true);
+  });
+
+  it("prefers the task's pinned host as the Pi catalog source", async () => {
+    render(
+      <CreateScheduledTaskDialog
+        open
+        onOpenChange={vi.fn()}
+        editingTask={scheduledTask({ agentId: "ag_pi_native", hostId: "host_pinned" })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(hostsHook.useHostModelOptions).toHaveBeenCalledWith("host_pinned", "pi-native", true),
+    );
+  });
+
+  it("sends Pi effort override without model or permission mode", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByTestId("task-name-input"), { target: { value: "N" } });
+    fireEvent.change(screen.getByTestId("task-prompt-input"), { target: { value: "P" } });
+    fireEvent.click(screen.getByTestId("pick-harness-pi"));
+
+    fireEvent.keyDown(screen.getByTestId("task-effort-trigger"), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "High" }));
+
+    fireEvent.click(screen.getByTestId("create-scheduled-task-submit"));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const arg = mutateAsync.mock.calls[0][0];
+    expect(arg.agentId).toBe("ag_pi_native");
+    expect(arg.reasoningEffort).toBe("high");
+    expect(arg).not.toHaveProperty("modelOverride");
+    expect(arg).not.toHaveProperty("permissionMode");
   });
 
   it("sends the selected model + effort on create for a capable agent", async () => {

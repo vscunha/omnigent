@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -28,10 +29,15 @@ import { WorkspacePickerDialog } from "@/shell/WorkspacePickerDialog";
 import { AgentHarnessPicker } from "@/shell/NewChatDialog";
 import { useAvailableAgents, type AvailableAgent } from "@/hooks/useAvailableAgents";
 import { useHosts } from "@/hooks/useHosts";
+import { useProjects } from "@/hooks/useConversations";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { sandboxOptionLabel } from "@/lib/capabilities";
 import { useCreateScheduledTask, useUpdateScheduledTask } from "@/hooks/useScheduledTasks";
-import { isNativeCodingAgent, nativeAgentHasCapability } from "@/lib/nativeCodingAgents";
+import {
+  isNativeCodingAgent,
+  nativeAgentHasCapability,
+  nativeCodingAgentForAvailableAgent,
+} from "@/lib/nativeCodingAgents";
 import { isAcpHarnessAgent, selectableSessionAgents } from "@/lib/agentGrouping";
 import {
   isBackdropOverlay,
@@ -69,6 +75,7 @@ export function CreateScheduledTaskDialog({
 }) {
   const { data: agents } = useAvailableAgents({ enabled: open });
   const { data: hosts } = useHosts({ enabled: open });
+  const { data: projects } = useProjects();
   const info = useServerInfo();
   // Gates the "new sandbox each run" option: only servers that can actually
   // serve a managed launch advertise it (same flag New Chat's sandbox option
@@ -105,16 +112,16 @@ export function CreateScheduledTaskDialog({
   const [pickedModel, setPickedModel] = useState<string>("");
   const [pickedEffort, setPickedEffort] = useState<string>("");
   const [pickedPermission, setPickedPermission] = useState<string>("");
+  const [agentSessionControl, setAgentSessionControl] = useState(false);
 
   const agentList = useMemo(() => selectableSessionAgents(agents ?? []), [agents]);
-  const harnessEntries = useMemo(
-    () => agentList.filter((a) => isNativeCodingAgent(a) || isAcpHarnessAgent(a)),
-    [agentList],
-  );
-  const agentEntries = useMemo(
-    () => agentList.filter((a) => !isNativeCodingAgent(a) && !isAcpHarnessAgent(a)),
-    [agentList],
-  );
+  // User-registered templates (builtin === false) are never native harness rows
+  // even when their declared harness matches a native harness id, so they stay
+  // under "Agents" / "Custom agents".
+  const isNativeHarnessRow = (a: AvailableAgent): boolean =>
+    (isNativeCodingAgent(a) && a.builtin !== false) || isAcpHarnessAgent(a);
+  const harnessEntries = useMemo(() => agentList.filter(isNativeHarnessRow), [agentList]);
+  const agentEntries = useMemo(() => agentList.filter((a) => !isNativeHarnessRow(a)), [agentList]);
   // Resolve the effective selection: the explicit pick if it's still in the
   // list, else the edited task's own agent (which may be hidden from the picker
   // — never silently retarget it), else the first agent (so a fresh picker
@@ -150,15 +157,12 @@ export function CreateScheduledTaskDialog({
     setPickedPermission(backToOriginal ? (editingTask?.permissionMode ?? "") : "");
   }
 
-  // Model + effort are surfaced only for native coding agents that carry the
-  // model/effort surface — the same `permissionMode` capability the interactive
-  // dialog gates its Model/Effort/Permissions block on (Claude Code). Agents
-  // without it (plain SDK agents like Polly, or native harnesses with no
-  // model-picker surface) show no model/effort controls, exactly like
-  // interactive. Resolved from the full agent list so a task bound to an agent
-  // the picker hides still gates on its real capabilities.
+  // Resolve from the full catalog, including agents hidden by the picker.
+  // Claude exposes permission controls; Pi exposes model and thinking level.
   const modelEffortAgent = agents?.find((a) => a.id === effectiveAgentId);
-  const showModelEffort = nativeAgentHasCapability(modelEffortAgent, "permissionMode");
+  const modelEffortHarness = nativeCodingAgentForAvailableAgent(modelEffortAgent)?.harness;
+  const showPermissionMode = nativeAgentHasCapability(modelEffortAgent, "permissionMode");
+  const showModelEffort = showPermissionMode || modelEffortHarness === "pi-native";
 
   // ── Nested dropdown dismiss guard ─────────────────────────────────────────
   // The agent picker and host/schedule Selects portal dropdowns OUTSIDE DialogContent.
@@ -207,6 +211,7 @@ export function CreateScheduledTaskDialog({
   // Optional pinned host/workspace. "" = unset (server resolves at fire time).
   const [hostId, setHostId] = useState<string>("");
   const [workspace, setWorkspace] = useState<string>("");
+  const [projectId, setProjectId] = useState<string>("");
   // When on, each fire runs in a FRESH managed sandbox (execution_target =
   // "managed_sandbox") instead of a connected host; hides the host/workspace
   // pickers. Only offered when the server advertises managed sandboxes.
@@ -232,10 +237,12 @@ export function CreateScheduledTaskDialog({
         setPickedModel(editingTask.modelOverride ?? "");
         setPickedEffort(editingTask.reasoningEffort ?? "");
         setPickedPermission(editingTask.permissionMode ?? "");
+        setAgentSessionControl(editingTask.agentSessionControl);
         setSchedule(parsedSchedule ?? DEFAULT_SCHEDULE_MODEL);
         setScheduleUnsupported(parsedSchedule === null);
         setHostId(editingTask.hostId ?? "");
         setWorkspace(editingTask.workspace ?? "");
+        setProjectId(editingTask.projectId ?? "");
         setSandboxMode(editingTask.executionTarget === "managed_sandbox");
       } else {
         setName(initialName ?? "");
@@ -244,10 +251,12 @@ export function CreateScheduledTaskDialog({
         setPickedModel("");
         setPickedEffort("");
         setPickedPermission("");
+        setAgentSessionControl(false);
         setSchedule(DEFAULT_SCHEDULE_MODEL);
         setScheduleUnsupported(false);
         setHostId("");
         setWorkspace("");
+        setProjectId("");
         setSandboxMode(false);
       }
       setError(null);
@@ -256,6 +265,9 @@ export function CreateScheduledTaskDialog({
   }, [open, initialName, initialPrompt, editingTask]);
 
   const hostOptions = hosts ?? [];
+  // Label-only legacy folders have no first-class id and cannot receive the
+  // metadata project assignment used by scheduled sessions.
+  const projectOptions = (projects ?? []).filter((project) => project.id !== null);
   const preservePinnedHost = isEdit && editingTask?.hostId != null;
   // The resolved Host for the pinned id, or undefined when none is pinned.
   const selectedHost = hostId === "" ? undefined : hostOptions.find((h) => h.host_id === hostId);
@@ -293,9 +305,11 @@ export function CreateScheduledTaskDialog({
     setPickedModel("");
     setPickedEffort("");
     setPickedPermission("");
+    setAgentSessionControl(false);
     setSchedule(DEFAULT_SCHEDULE_MODEL);
     setHostId("");
     setWorkspace("");
+    setProjectId("");
     setWorkspaceBrowserOpen(false);
     setSandboxMode(false);
     setError(null);
@@ -325,6 +339,8 @@ export function CreateScheduledTaskDialog({
         prompt: prompt.trim(),
         rrule: buildRRule(schedule),
         timezone: editingTask?.timezone ?? localTimezone(),
+        agentSessionControl,
+        ...(projectId !== "" ? { projectId } : {}),
         ...(executionTargetChanged ? { executionTarget } : {}),
         ...(!sandboxMode && hostId !== "" ? { hostId } : {}),
         ...(!sandboxMode && hostId !== "" && workspace.trim() !== ""
@@ -340,7 +356,9 @@ export function CreateScheduledTaskDialog({
           ? {
               modelOverride: pickedModel === "" ? null : pickedModel,
               reasoningEffort: pickedEffort === "" ? null : pickedEffort,
-              permissionMode: pickedPermission === "" ? null : pickedPermission,
+              ...(showPermissionMode
+                ? { permissionMode: pickedPermission === "" ? null : pickedPermission }
+                : {}),
             }
           : {};
         await updateMutation.mutateAsync({
@@ -351,6 +369,9 @@ export function CreateScheduledTaskDialog({
             // Only on a real switch: sending the unchanged agent is a server-side
             // no-op, but omitting it keeps the PATCH honest about what changed.
             ...(agentChanged && effectiveAgentId !== null ? { agentId: effectiveAgentId } : {}),
+            ...(projectId !== (editingTask.projectId ?? "")
+              ? { projectId: projectId === "" ? null : projectId }
+              : {}),
           },
         });
       } else {
@@ -363,7 +384,7 @@ export function CreateScheduledTaskDialog({
           // the create uses the agent's configured defaults.
           ...(showModelEffort && pickedModel !== "" ? { modelOverride: pickedModel } : {}),
           ...(showModelEffort && pickedEffort !== "" ? { reasoningEffort: pickedEffort } : {}),
-          ...(showModelEffort && pickedPermission !== ""
+          ...(showPermissionMode && pickedPermission !== ""
             ? { permissionMode: pickedPermission }
             : {}),
         });
@@ -486,33 +507,79 @@ export function CreateScheduledTaskDialog({
             )}
             {!showModelEffort && (
               <p className="text-sm text-muted-foreground">
-                Uses this agent&apos;s default model, effort, and permission settings
+                Uses this agent&apos;s default model and effort
+                {showPermissionMode ? ", and permission settings" : ""}
               </p>
             )}
           </div>
 
-          {/* Model + reasoning effort + permission mode — only for native
-              coding agents that carry the model/effort surface (Claude Code).
-              Unselected controls fall back to the agent's configured defaults. */}
+          {/* Model + reasoning effort (+ Claude permission mode) — only for native
+              coding agents that carry the corresponding capability. Unselected
+              controls fall back to the agent's configured defaults. */}
           {showModelEffort && (
             <div data-testid="task-model-effort-field">
               <ModelEffortFields
+                harness={modelEffortHarness === "pi-native" ? "pi-native" : "claude-native"}
                 model={pickedModel}
                 effort={pickedEffort}
                 permissionMode={pickedPermission}
                 hostId={hostId}
+                // Catalog source when no host is pinned: Pi's model list is
+                // host-enumerated, so without this the picker would show only
+                // Default for exactly the tasks that pin no host. Catalog-only
+                // — it never becomes the task's pinned host.
+                catalogHostId={badgeHost?.host_id ?? ""}
                 onModelChange={setPickedModel}
                 onEffortChange={setPickedEffort}
                 onPermissionModeChange={setPickedPermission}
                 onSelectOpenChange={handleSelectOpenChange}
               />
               <p className="mt-1.5 text-sm text-muted-foreground">
-                Leave on Default to use the agent&apos;s configured model, effort, and permission
-                mode. Automations run unattended, so a prompting mode (Manual or Plan) will wait for
-                approval that never comes.
+                Leave on Default to use the agent&apos;s configured model and effort
+                {showPermissionMode ? ", and permission mode" : ""}. Automations run unattended, so
+                a prompting mode (Manual or Plan) will wait for approval that never comes.
               </p>
             </div>
           )}
+
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-3">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="task-agent-session-control">Allow session supervision</Label>
+              <p className="text-sm text-muted-foreground">
+                Lets this automation message or recover other permitted sessions and post Inbox
+                notifications.
+              </p>
+            </div>
+            <Switch
+              id="task-agent-session-control"
+              checked={agentSessionControl}
+              onCheckedChange={setAgentSessionControl}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5" data-testid="task-project-field">
+            <Label htmlFor="task-project">Project (optional)</Label>
+            <Select
+              value={projectId === "" ? UNSET_PROJECT : projectId}
+              onValueChange={(value) => setProjectId(value === UNSET_PROJECT ? "" : value)}
+              onOpenChange={handleSelectOpenChange}
+            >
+              <SelectTrigger id="task-project" data-testid="task-project-trigger">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                <SelectItem value={UNSET_PROJECT}>No project</SelectItem>
+                {projectOptions.map((project) => (
+                  <SelectItem key={project.id!} value={project.id!}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-sm text-muted-foreground">
+              Sessions created by this automation will appear in the selected project.
+            </p>
+          </div>
 
           <ScheduleFields
             model={schedule}
@@ -663,6 +730,7 @@ export function CreateScheduledTaskDialog({
 
 /** Sentinel Select value for "no pinned host" — Radix Select disallows "". */
 const UNSET_HOST = "__unset_host__";
+const UNSET_PROJECT = "__unset_project__";
 
 /** Sentinel Select value for the "New Sandbox" option (execution_target=managed_sandbox). */
 const SANDBOX_HOST = "__sandbox__";

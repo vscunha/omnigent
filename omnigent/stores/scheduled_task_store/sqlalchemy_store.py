@@ -51,6 +51,7 @@ def _to_entity(row: SqlScheduledTask) -> ScheduledTask:
         user_id=row.user_id,
         account_generation=row.account_generation,
         agent_id=row.agent_id,
+        project_id=row.project_id,
         timezone=row.timezone,
         created_at=row.created_at,
         workspace_id=row.workspace_id or DEFAULT_WORKSPACE_ID,
@@ -58,6 +59,7 @@ def _to_entity(row: SqlScheduledTask) -> ScheduledTask:
         model_override=row.model_override,
         reasoning_effort=row.reasoning_effort,
         permission_mode=row.permission_mode,
+        agent_session_control=row.agent_session_control,
         max_cost_usd=row.max_cost_usd,
         workspace=row.workspace,
         base_branch=row.base_branch,
@@ -136,9 +138,11 @@ class SqlAlchemyScheduledTaskStore(ScheduledTaskStore):
         agent_id: str,
         timezone: str,
         *,
+        project_id: str | None = None,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
         permission_mode: str | None = None,
+        agent_session_control: bool = False,
         max_cost_usd: float | None = None,
         workspace: str | None = None,
         host_id: str | None = None,
@@ -158,10 +162,12 @@ class SqlAlchemyScheduledTaskStore(ScheduledTaskStore):
                 rrule=rrule,
                 user_id=user_id,
                 agent_id=agent_id,
+                project_id=project_id,
                 timezone=timezone,
                 model_override=model_override,
                 reasoning_effort=reasoning_effort,
                 permission_mode=permission_mode,
+                agent_session_control=agent_session_control,
                 max_cost_usd=max_cost_usd,
                 workspace=workspace,
                 base_branch=None,
@@ -267,9 +273,11 @@ class SqlAlchemyScheduledTaskStore(ScheduledTaskStore):
         rrule: str | None = None,
         agent_id: str | None = None,
         timezone: str | None = None,
+        project_id: str | None = _UNSET,
         model_override: str | None = _UNSET,
         reasoning_effort: str | None = _UNSET,
         permission_mode: str | None = _UNSET,
+        agent_session_control: bool | None = None,
         max_cost_usd: float | None = _UNSET,
         workspace: str | None = _UNSET,
         host_id: str | None = _UNSET,
@@ -317,6 +325,9 @@ class SqlAlchemyScheduledTaskStore(ScheduledTaskStore):
             if timezone is not None and row.timezone != timezone:
                 row.timezone = timezone
                 changed = True
+            if project_id is not _UNSET and row.project_id != project_id:
+                row.project_id = project_id
+                changed = True
             if model_override is not _UNSET and row.model_override != model_override:
                 row.model_override = model_override
                 changed = True
@@ -325,6 +336,12 @@ class SqlAlchemyScheduledTaskStore(ScheduledTaskStore):
                 changed = True
             if permission_mode is not _UNSET and row.permission_mode != permission_mode:
                 row.permission_mode = permission_mode
+                changed = True
+            if (
+                agent_session_control is not None
+                and row.agent_session_control != agent_session_control
+            ):
+                row.agent_session_control = agent_session_control
                 changed = True
             if max_cost_usd is not _UNSET and row.max_cost_usd != max_cost_usd:
                 row.max_cost_usd = max_cost_usd

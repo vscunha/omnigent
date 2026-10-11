@@ -5,17 +5,16 @@
 // interactive NewChatDialog's 26-prop HarnessConfigModal (which is bound to
 // smart-routing / cost-control / per-turn dynamic model loading — all
 // disproportionate for a saved scheduled task). It reuses the SHARED source of
-// truth for the option lists: CLAUDE_NATIVE_MODELS (the version-agnostic model
-// aliases) and CLAUDE_NATIVE_EFFORTS + the MODEL_SELECT_DEFAULT /
-// EFFORT_SELECT_NONE sentinels from HarnessConfigControls, so the choices never
-// drift from the interactive dialog.
+// truth for the option lists: the native harness model and effort lists, plus
+// the MODEL_SELECT_DEFAULT / EFFORT_SELECT_NONE sentinels from
+// HarnessConfigControls, so the choices never drift from the interactive
+// dialog.
 //
-// The parent gates rendering on the selected agent's capability
-// (nativeAgentHasCapability(agent, "permissionMode") — the Claude-native flag
-// that also carries the model/effort surface), exactly like interactive. Both
-// controls default to "unselected" ("" = agent default), which the parent omits
-// from the create/update body so the fire path uses the agent's configured
-// model + effort.
+// Claude uses its permission-mode controls; Pi uses a host-resolved model
+// catalog and its static thinking-level ladder.
+// Every control defaults to "unselected" ("" = agent default), which the
+// parent omits from the create/update body so the fire path uses the agent's
+// configured model + effort.
 
 import { Label } from "@/components/scheduled/Label";
 import {
@@ -29,6 +28,7 @@ import {
   CLAUDE_NATIVE_EFFORTS,
   EFFORT_SELECT_NONE,
   MODEL_SELECT_DEFAULT,
+  PI_NATIVE_EFFORTS,
 } from "@/components/HarnessConfigControls";
 import { CLAUDE_NATIVE_MODELS } from "@/lib/claudeNativeModels";
 import { CLAUDE_NATIVE_PERMISSION_MODES } from "@/lib/claudePermissionMode";
@@ -40,15 +40,19 @@ import { useHostModelOptions } from "@/hooks/useHosts";
 const PERMISSION_SELECT_DEFAULT = "__agent_default__";
 
 export function ModelEffortFields({
+  harness,
   model,
   effort,
   permissionMode,
   hostId,
+  catalogHostId,
   onModelChange,
   onEffortChange,
   onPermissionModeChange,
   onSelectOpenChange,
 }: {
+  /** Native harness whose model catalog and controls should be shown. */
+  harness: "claude-native" | "pi-native";
   /** Selected model id/alias, or "" = agent default (nothing overridden). */
   model: string;
   /** Selected reasoning effort, or "" = agent default. */
@@ -57,6 +61,11 @@ export function ModelEffortFields({
   permissionMode: string;
   /** Pinned host id, or "" when unset (task resolves a host at fire time). */
   hostId: string;
+  /** Host whose live catalog populates the model list when `hostId` is unset.
+   * Pi has no static alias list, so without this its picker would offer only
+   * Default whenever the task pins no host. Catalog-only: it never becomes the
+   * task's pinned host. */
+  catalogHostId?: string;
   onModelChange: (model: string) => void;
   onEffortChange: (effort: string) => void;
   onPermissionModeChange: (mode: string) => void;
@@ -64,19 +73,30 @@ export function ModelEffortFields({
    * open dropdown from dismissing the whole modal. */
   onSelectOpenChange?: (open: boolean) => void;
 }) {
+  const isPi = harness === "pi-native";
   // When a host is pinned, use its live-resolved model options (mirrors the
   // interactive dialog on a connected host). With no host pinned — the common
   // case, since scheduled tasks resolve a host at fire time — fall back to the
-  // static Claude aliases so the picker is always populated.
+  // stable native aliases so the picker is always populated. Pi has no static
+  // aliases (its models are provider-bound and host-enumerated), so it falls
+  // back to the catalog host instead (see `catalogHostId`), keeping its list
+  // identical whether or not the task pins a host.
+  const resolvedCatalogHostId = hostId !== "" ? hostId : (catalogHostId ?? "");
   const { data: hostModelOptions } = useHostModelOptions(
-    hostId === "" ? null : hostId,
-    "claude-native",
-    hostId !== "",
+    resolvedCatalogHostId === "" ? null : resolvedCatalogHostId,
+    harness,
+    resolvedCatalogHostId !== "",
   );
   const modelOptions =
     hostModelOptions && hostModelOptions.length > 0
       ? hostModelOptions.map((o) => ({ id: o.id, label: o.displayName ?? o.id }))
-      : CLAUDE_NATIVE_MODELS.map((m) => ({ id: m.id, label: m.label }));
+      : isPi
+        ? []
+        : CLAUDE_NATIVE_MODELS.map((m) => ({
+            id: m.id,
+            label: m.label,
+          }));
+  const effortOptions = isPi ? PI_NATIVE_EFFORTS : CLAUDE_NATIVE_EFFORTS;
 
   return (
     <div className="flex flex-col gap-3 sm:gap-4">
@@ -126,7 +146,7 @@ export function ModelEffortFields({
               className="w-(--radix-select-trigger-width)"
             >
               <SelectItem value={EFFORT_SELECT_NONE}>Default</SelectItem>
-              {CLAUDE_NATIVE_EFFORTS.map((e) => (
+              {effortOptions.map((e) => (
                 <SelectItem key={e.value} value={e.value}>
                   {e.label}
                 </SelectItem>
@@ -136,36 +156,39 @@ export function ModelEffortFields({
         </div>
       </div>
 
-      <div className="flex w-full min-w-0 flex-col gap-1.5" data-testid="task-permission-control">
-        <Label htmlFor="task-permission">Permission mode</Label>
-        <Select
-          value={permissionMode === "" ? PERMISSION_SELECT_DEFAULT : permissionMode}
-          componentId="tasks.scheduled.permission_mode"
-          valueHasNoPii
-          onValueChange={(v) => onPermissionModeChange(v === PERMISSION_SELECT_DEFAULT ? "" : v)}
-          onOpenChange={onSelectOpenChange}
-        >
-          <SelectTrigger
-            id="task-permission"
-            data-testid="task-permission-trigger"
-            className="w-full"
+      {/* Permission mode is a Claude-only control. */}
+      {!isPi && (
+        <div className="flex w-full min-w-0 flex-col gap-1.5" data-testid="task-permission-control">
+          <Label htmlFor="task-permission">Permission mode</Label>
+          <Select
+            value={permissionMode === "" ? PERMISSION_SELECT_DEFAULT : permissionMode}
+            componentId="tasks.scheduled.permission_mode"
+            valueHasNoPii
+            onValueChange={(v) => onPermissionModeChange(v === PERMISSION_SELECT_DEFAULT ? "" : v)}
+            onOpenChange={onSelectOpenChange}
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent
-            position="popper"
-            align="start"
-            className="w-(--radix-select-trigger-width)"
-          >
-            <SelectItem value={PERMISSION_SELECT_DEFAULT}>Default</SelectItem>
-            {CLAUDE_NATIVE_PERMISSION_MODES.map((m) => (
-              <SelectItem key={m.value} value={m.value}>
-                {m.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+            <SelectTrigger
+              id="task-permission"
+              data-testid="task-permission-trigger"
+              className="w-full"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent
+              position="popper"
+              align="start"
+              className="w-(--radix-select-trigger-width)"
+            >
+              <SelectItem value={PERMISSION_SELECT_DEFAULT}>Default</SelectItem>
+              {CLAUDE_NATIVE_PERMISSION_MODES.map((m) => (
+                <SelectItem key={m.value} value={m.value}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
     </div>
   );
 }

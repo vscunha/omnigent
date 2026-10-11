@@ -38,6 +38,9 @@ class ScheduledTask:
     :param user_id: User the spawned session's ``LEVEL_OWNER`` grant is
         written for, e.g. ``"alice@example.com"``. ``None`` in single-user mode.
     :param agent_id: The agent bound to this task, e.g. ``"ag_..."``.
+    :param project_id: Optional owner-scoped project that receives each
+        conversation created by this task. ``None`` leaves fired sessions
+        unfiled.
     :param timezone: IANA timezone the trigger is evaluated in,
         e.g. ``"America/Los_Angeles"``.
     :param created_at: Unix epoch seconds at row creation.
@@ -50,6 +53,8 @@ class ScheduledTask:
         ``"bypassPermissions"``. The fire path turns it into the runner's
         ``["--permission-mode", <value>]`` terminal launch args. ``None`` means
         use the agent's configured default.
+    :param agent_session_control: Whether sessions fired by this task may
+        message and retry other permitted sessions and notify the user's Inbox.
     :param max_cost_usd: Optional per-firing cost budget in USD. When set, the
         fire path attaches a ``cost_budget`` policy to each spawned session that
         blocks all models once cumulative spend reaches this limit. ``None``
@@ -82,9 +87,11 @@ class ScheduledTask:
     timezone: str
     created_at: int
     workspace_id: int = 0
+    project_id: str | None = None
     model_override: str | None = None
     reasoning_effort: str | None = None
     permission_mode: str | None = None
+    agent_session_control: bool = False
     max_cost_usd: float | None = None
     workspace: str | None = None
     base_branch: str | None = None

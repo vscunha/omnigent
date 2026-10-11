@@ -48,9 +48,11 @@ class ScheduledTaskStore(ABC):
         agent_id: str,
         timezone: str,
         *,
+        project_id: str | None = None,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
         permission_mode: str | None = None,
+        agent_session_control: bool = False,
         max_cost_usd: float | None = None,
         workspace: str | None = None,
         host_id: str | None = None,
@@ -69,6 +71,7 @@ class ScheduledTaskStore(ABC):
             is written for; ``None`` in single-user mode.
         :param agent_id: The agent bound to this task.
         :param timezone: IANA timezone the trigger is evaluated in.
+        :param project_id: Optional project that receives each fired session.
         :param model_override: Optional LLM model override.
         :param reasoning_effort: Optional reasoning-effort hint.
         :param permission_mode: Optional native-harness permission mode
@@ -138,9 +141,11 @@ class ScheduledTaskStore(ABC):
         rrule: str | None = None,
         agent_id: str | None = None,
         timezone: str | None = None,
+        project_id: str | None = _UNSET,
         model_override: str | None = _UNSET,
         reasoning_effort: str | None = _UNSET,
         permission_mode: str | None = _UNSET,
+        agent_session_control: bool | None = None,
         max_cost_usd: float | None = _UNSET,
         workspace: str | None = _UNSET,
         host_id: str | None = _UNSET,

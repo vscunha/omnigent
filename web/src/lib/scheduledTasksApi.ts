@@ -39,6 +39,8 @@ export interface ScheduledTask {
   /** Owning user, or `null` in single-user / auth-disabled deployments. */
   ownerUserId: string | null;
   agentId: string;
+  /** First-class project receiving sessions fired by this task, or null. */
+  projectId: string | null;
   /** IANA timezone the RRULE is evaluated in, e.g. `America/Los_Angeles`. */
   timezone: string;
   createdAt: number;
@@ -51,6 +53,8 @@ export interface ScheduledTask {
    * `--permission-mode` launch arg from it at fire time.
    */
   permissionMode: string | null;
+  /** Allow this automation's sessions to supervise other permitted sessions. */
+  agentSessionControl: boolean;
   /** Pinned absolute workspace, or `null` (server defaults to the host home). */
   workspace: string | null;
   /** Pinned host, or `null` (server resolves the connected host at fire time). */
@@ -96,11 +100,14 @@ export interface CreateScheduledTaskInput {
   prompt: string;
   rrule: string;
   agentId: string;
+  /** Optional first-class project for sessions fired by this task. */
+  projectId?: string | null;
   timezone?: string;
   modelOverride?: string | null;
   reasoningEffort?: string | null;
   /** Native-harness permission mode (Claude Code); omit for the agent default. */
   permissionMode?: string | null;
+  agentSessionControl?: boolean;
   /** Optional pinned workspace; only valid together with `hostId`. */
   workspace?: string | null;
   /** Optional pinned host. */
@@ -129,10 +136,13 @@ export interface UpdateScheduledTaskInput {
    * is Claude-only) unless the same PATCH resends them.
    */
   agentId?: string;
+  /** Set to a project id, or null to unfile future sessions. */
+  projectId?: string | null;
   timezone?: string;
   modelOverride?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: string | null;
+  agentSessionControl?: boolean;
   workspace?: string;
   hostId?: string;
   /**
@@ -151,12 +161,14 @@ interface ScheduledTaskWire {
   rrule: string;
   owner_user_id: string | null;
   agent_id: string;
+  project_id: string | null;
   timezone: string;
   created_at: number;
   updated_at: number;
   model_override: string | null;
   reasoning_effort: string | null;
   permission_mode: string | null;
+  agent_session_control: boolean;
   workspace: string | null;
   host_id: string | null;
   execution_target: ScheduledTaskExecutionTarget;
@@ -227,12 +239,14 @@ function taskFromWire(wire: ScheduledTaskWire): ScheduledTask {
     rrule: wire.rrule,
     ownerUserId: wire.owner_user_id,
     agentId: wire.agent_id,
+    projectId: wire.project_id,
     timezone: wire.timezone,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
     modelOverride: wire.model_override,
     reasoningEffort: wire.reasoning_effort,
     permissionMode: wire.permission_mode,
+    agentSessionControl: wire.agent_session_control,
     workspace: wire.workspace,
     hostId: wire.host_id,
     executionTarget: wire.execution_target,
@@ -291,9 +305,13 @@ export async function createScheduledTask(input: CreateScheduledTaskInput): Prom
     agent_id: input.agentId,
   };
   if (input.timezone !== undefined) body.timezone = input.timezone;
+  if (input.projectId !== undefined) body.project_id = input.projectId;
   if (input.modelOverride != null) body.model_override = input.modelOverride;
   if (input.reasoningEffort != null) body.reasoning_effort = input.reasoningEffort;
   if (input.permissionMode != null) body.permission_mode = input.permissionMode;
+  if (input.agentSessionControl !== undefined) {
+    body.agent_session_control = input.agentSessionControl;
+  }
   if (input.workspace != null) body.workspace = input.workspace;
   if (input.hostId != null) body.host_id = input.hostId;
   if (input.executionTarget !== undefined) body.execution_target = input.executionTarget;
@@ -320,9 +338,13 @@ export async function updateScheduledTask(
   if (input.rrule !== undefined) body.rrule = input.rrule;
   if (input.agentId !== undefined) body.agent_id = input.agentId;
   if (input.timezone !== undefined) body.timezone = input.timezone;
+  if (input.projectId !== undefined) body.project_id = input.projectId;
   if (input.modelOverride !== undefined) body.model_override = input.modelOverride;
   if (input.reasoningEffort !== undefined) body.reasoning_effort = input.reasoningEffort;
   if (input.permissionMode !== undefined) body.permission_mode = input.permissionMode;
+  if (input.agentSessionControl !== undefined) {
+    body.agent_session_control = input.agentSessionControl;
+  }
   if (input.workspace !== undefined) body.workspace = input.workspace;
   if (input.hostId !== undefined) body.host_id = input.hostId;
   if (input.executionTarget !== undefined) body.execution_target = input.executionTarget;
