@@ -193,6 +193,7 @@ import { EmojiPicker } from "@/components/ProjectIconPicker";
 import { SessionStateBadge } from "@/components/SessionStateBadge";
 import { useSessionRunnerOnline } from "@/hooks/RunnerHealthProvider";
 import { useActiveRootSessionId } from "@/hooks/useSession";
+import { useInboxNotifications } from "@/hooks/useInboxNotifications";
 import { isSessionStoppable } from "@/lib/sessionStop";
 import { SidebarEditRow } from "./SidebarEditRow";
 import { hasSessionDraft, useHasSessionDraft, useSessionDraftIds } from "@/lib/sessionDrafts";
@@ -780,11 +781,16 @@ function SidebarImpl({
         : availableTab === "shared"
           ? sidebarData.shared
           : sidebarData.all;
-  const inboxCount = sidebarData.inboxCount;
-
   // The scrollable list container — used as the IntersectionObserver root for
   // infinite scroll (auto-loading the next page as the sentinel nears view).
   const scrollContainerRef = useRef<HTMLElement>(null);
+
+  // Inbox badge — approval prompts + unseen comments come from the shared
+  // sidebar sources; the durable inbox notifications add their outstanding
+  // count on top (comment queries are shared with the page/FileViewer, so
+  // this adds no duplicate fetches).
+  const notificationCount = useInboxNotifications().data?.outstanding_count ?? 0;
+  const inboxCount = sidebarData.inboxCount + notificationCount;
   const [hasScrolled, setHasScrolled] = useState(false);
   // Show the scrollbar only while actively scrolling; hide it after a pause.
   const [isScrolling, setIsScrolling] = useState(false);

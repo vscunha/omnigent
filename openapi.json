@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "AcknowledgeInboxNotificationRequest": {
+        "additionalProperties": false,
+        "description": "Explicit acknowledgement payload used by the Inbox UI.",
+        "properties": {
+          "acknowledged": {
+            "const": true,
+            "default": true,
+            "title": "Acknowledged",
+            "type": "boolean"
+          }
+        },
+        "title": "AcknowledgeInboxNotificationRequest",
+        "type": "object"
+      },
       "AddCommentRequest": {
         "description": "Request body for `POST /sessions/{id}/comments`.",
         "properties": {
@@ -1781,6 +1795,40 @@
           "path"
         ],
         "title": "CreateDirectoryRequest",
+        "type": "object"
+      },
+      "CreateInboxNotificationRequest": {
+        "additionalProperties": false,
+        "description": "Payload accepted from the source agent session.",
+        "properties": {
+          "body": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "attention",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body",
+          "severity"
+        ],
+        "title": "CreateInboxNotificationRequest",
         "type": "object"
       },
       "CreateProjectRequest": {
@@ -12119,6 +12167,107 @@
         ]
       }
     },
+    "/v1/inbox/notifications": {
+      "get": {
+        "description": "List the current user's notifications and outstanding count.",
+        "operationId": "list_notifications_v1_inbox_notifications_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_acknowledged",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Acknowledged",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Notifications V1 Inbox Notifications Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Notifications",
+        "tags": [
+          "inbox_notifications"
+        ]
+      }
+    },
+    "/v1/inbox/notifications/{notification_id}": {
+      "patch": {
+        "description": "Acknowledge one notification owned by the current user.",
+        "operationId": "acknowledge_notification_v1_inbox_notifications__notification_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "required": true,
+            "schema": {
+              "title": "Notification Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeInboxNotificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Acknowledge Notification V1 Inbox Notifications  Notification Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge Notification",
+        "tags": [
+          "inbox_notifications"
+        ]
+      }
+    },
     "/v1/info": {
       "get": {
         "description": "Runtime capabilities probe for the SPA + CLI.\n\nReturned at app boot by the frontend (and by `omnigent login` when it needs to choose between flows). Drives\nconditional route registration and chrome on the SPA side\n\u2014 when `accounts_enabled` is false, the SPA never\nregisters `/login`, `/register`, `/members` and\nnever renders the AccountMenu, so the bundle behaves\nidentically to a pre-PR-2008 build for header / OIDC\ndeploys (in particular, the internal hosted product that\nsyncs from this repo).\n\nAuthentication: this endpoint is intentionally UNAUTHED\nso the SPA can probe it before holding a session cookie.\nIt exposes no sensitive state \u2014 only the active auth\nsource, the login URL, whether first-run admin setup is\nstill pending (`needs_setup`), coarse capability\nbooleans (`databricks_features`,\n`managed_sandboxes_enabled`, `dictation_available`,\n`single_user`), the short sandbox provider name\n(`sandbox_provider`) the web UI labels the new-session\nsandbox option with, and the installed\n`server_version` (already public via `/api/version`).",
@@ -17355,6 +17504,61 @@
         ]
       }
     },
+    "/v1/sessions/{source_session_id}/inbox-notifications": {
+      "post": {
+        "description": "Create a notification sourced from a session the caller can edit.",
+        "operationId": "create_notification_v1_sessions__source_session_id__inbox_notifications_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_session_id",
+            "required": true,
+            "schema": {
+              "title": "Source Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInboxNotificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Notification V1 Sessions  Source Session Id  Inbox Notifications Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Notification",
+        "tags": [
+          "inbox_notifications"
+        ]
+      }
+    },
     "/v1/sharing": {
       "get": {
         "description": "Report every setting, whether each is editable here, and the options.",
@@ -17624,6 +17828,11 @@
       "description": "Threaded comments on a session, including sending a comment to the agent.",
       "name": "comments",
       "x-displayName": "Comments"
+    },
+    {
+      "description": "Durable, owner-scoped notifications posted by agent sessions.",
+      "name": "inbox_notifications",
+      "x-displayName": "Inbox Notifications"
     },
     {
       "description": "First-class, owner-private containers that group sessions \u2014 create, list, rename, and delete.",
