@@ -148,6 +148,14 @@ def test_builtin_names_size_matches_registry() -> None:
                 # is enabled (RuntimeCaps.routing_client is set).
                 "sys_list_models",
                 "sys_advise_models",
+                # Session-supervision / inbox tools: registered by ToolManager
+                # for agents with session control; intercepted by name in the
+                # runner's tool dispatch. Reserved here so specs cannot
+                # shadow them.
+                "sys_session_children",
+                "sys_session_message",
+                "sys_session_retry",
+                "sys_inbox_notify",
                 # Embedded-browser tools: always registered (schema-only
                 # Tool classes; execution is runner-dispatched via the
                 # _BROWSER_TOOLS branch in runner/tool_dispatch.py).

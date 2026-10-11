@@ -310,12 +310,20 @@ _SESSION_CREATE_TOOLS = frozenset({"sys_session_create"})
 # posture as _execute_subagent_tool / _execute_comment_tool.
 _SESSION_QUERY_TOOLS = frozenset(
     {
+        "sys_session_children",
         "sys_session_get_history",
         "sys_session_list",
         "sys_session_close",
         "sys_session_get_info",
         "sys_session_share",
     }
+)
+
+# Independent-session and user-Inbox mutations. ToolManager advertises these
+# only when the agent spec opts into ``agent_session_control``; the dispatcher
+# repeats the gate so an unadvertised direct call still fails closed.
+_SESSION_CONTROL_TOOLS = frozenset(
+    {"sys_session_message", "sys_session_retry", "sys_inbox_notify"}
 )
 
 _SESSION_SELF_WRITE_TOOLS = frozenset({SysSessionRenameTool.name()})
@@ -476,6 +484,7 @@ _BROWSER_TIMEOUT_ERROR = (
 _NATIVE_RELAY_BUILTIN_TOOLS = (
     _COMMENT_TOOLS
     | _SESSION_QUERY_TOOLS
+    | _SESSION_CONTROL_TOOLS
     | _SESSION_SELF_WRITE_TOOLS
     | _ASYNC_INBOX_TOOLS
     | _SUBAGENT_TOOLS
@@ -874,6 +883,7 @@ _ALL_LOCAL_TOOLS = (
     | _ADVISE_MODELS_TOOLS
     | _SESSION_CREATE_TOOLS
     | _SESSION_QUERY_TOOLS
+    | _SESSION_CONTROL_TOOLS
     | _SESSION_SELF_WRITE_TOOLS
     | _WEB_FETCH_TOOLS
     | _WEB_SEARCH_TOOLS
@@ -5008,6 +5018,8 @@ async def _execute_session_query_tool(
             cursor_state=cursor_state,
             continued=continued,
         )
+    if tool_name == "sys_session_children":
+        return await _session_children_via_rest(args, server_client)
     if tool_name == "sys_session_get_history":
         return await _session_get_history_via_rest(args, server_client)
     if tool_name == "sys_session_get_info":
@@ -5062,6 +5074,67 @@ async def _host_harnesses_or_none(
     return readiness if isinstance(readiness, dict) else None
 
 
+async def _session_children_via_rest(
+    args: _JsonObject,
+    server_client: httpx.AsyncClient,
+) -> str:
+    """List direct children through the server's canonical parent query."""
+    target_id = args.get("session_id")
+    if not isinstance(target_id, str) or not target_id:
+        return json.dumps(
+            {"error": "sys_session_children requires a non-empty 'session_id' string"}
+        )
+    try:
+        response = await server_client.get(
+            f"/v1/sessions/{target_id}/child_sessions",
+            params={"limit": 1000, "order": "desc"},
+            timeout=30.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"sys_session_children failed: {exc}"})
+    if response.status_code == 404:
+        return json.dumps({"error": "session_not_found", "session_id": target_id})
+    if response.status_code in (401, 403):
+        return json.dumps({"error": "access_denied", "session_id": target_id})
+    if response.status_code != 200:
+        return json.dumps({"error": f"sys_session_children returned {response.status_code}"})
+
+    rows = _json_object_list(response.json().get("data"))
+    children: list[_JsonObject] = []
+    for row in rows:
+        current_status = row.get("current_task_status")
+        status = (
+            "running"
+            if row.get("busy") is True
+            else "failed"
+            if current_status == "failed" or row.get("last_task_error") is not None
+            else "idle"
+            if current_status == "completed"
+            else "created"
+        )
+        children.append(
+            {
+                "session_id": row.get("id"),
+                "agent_id": row.get("agent_id"),
+                "agent": row.get("tool") or row.get("agent_name"),
+                "sub_agent_name": row.get("session_name"),
+                "title": row.get("title"),
+                "status": status,
+                "runner_online": None,
+                "last_activity_at": row.get("updated_at"),
+                "last_error": row.get("last_task_error"),
+                "pending_input_count": row.get("pending_elicitations_count", 0),
+            }
+        )
+    return json.dumps(
+        {
+            "session_id": target_id,
+            "children": children,
+            "has_more": bool(response.json().get("has_more")),
+        }
+    )
+
+
 async def _session_get_info_via_rest(
     args: _JsonObject,
     conversation_id: str,
@@ -5074,7 +5147,8 @@ async def _session_get_info_via_rest(
     caller's own ``conversation_id`` when omitted), fetches the session
     snapshot, and projects the metadata fields — status, title, agent
     binding, runner binding, host and its reported harness readiness,
-    reasoning effort, effective model,
+    reasoning effort, effective model, context window and the latest
+    harness-reported context token count,
     parent linkage, workspace / git branch, persisted last-activity time,
     and the outstanding approval prompts (the prompts themselves plus a
     count). Runner connectivity
@@ -5123,6 +5197,12 @@ async def _session_get_info_via_rest(
         _runner_online_or_none(snap_runner_id, server_client),
         _host_harnesses_or_none(snap_host_id, server_client),
     )
+    context_window = snap.get("context_window")
+    # ``last_total_tokens`` is the server's persisted name for the latest
+    # context-fill report. Present it to agents as a harness-neutral token
+    # count; deriving a percentage here would assume that every harness reports
+    # occupancy against the same kind of context window.
+    context_tokens = snap.get("last_total_tokens")
     return json.dumps(
         {
             "session_id": snap.get("id"),
@@ -5149,6 +5229,11 @@ async def _session_get_info_via_rest(
             # Effective model: a per-session override wins over the
             # agent spec's default; both may be None when unset.
             "model": snap.get("model_override") or snap.get("llm_model"),
+            # Context telemetry is persisted by the server snapshot. Expose the
+            # raw token count and optional window; leave interpretation of the
+            # harness-reported count to the caller.
+            "context_window": context_window,
+            "context_tokens": context_tokens,
             "workspace": snap.get("workspace"),
             "git_branch": snap.get("git_branch"),
             # The outstanding approval prompts themselves (original
@@ -6581,6 +6666,80 @@ async def _fetch_peek_meta(
     return _PeekMeta(agent=parsed.agent, title=parsed.title, pending_elicitations=pending)
 
 
+async def _execute_session_control_tool(
+    tool_name: str,
+    args: _JsonObject,
+    *,
+    server_client: httpx.AsyncClient | None,
+    conversation_id: str | None,
+    agent_spec: AgentSpec | None,
+) -> str:
+    """Proxy supervisor mutations through existing authenticated APIs."""
+    if agent_spec is None or not agent_spec.agent_session_control:
+        return json.dumps({"error": "agent_session_control_not_enabled"})
+    if server_client is None:
+        return json.dumps({"error": f"{tool_name} requires server access"})
+
+    if tool_name == "sys_inbox_notify":
+        if not isinstance(conversation_id, str) or not conversation_id:
+            return json.dumps({"error": "sys_inbox_notify requires a calling session"})
+        title = args.get("title")
+        body = args.get("body")
+        severity = args.get("severity")
+        if not isinstance(title, str) or not title.strip():
+            return json.dumps({"error": "sys_inbox_notify requires a non-empty title"})
+        if not isinstance(body, str) or not body.strip():
+            return json.dumps({"error": "sys_inbox_notify requires a non-empty body"})
+        if severity not in ("info", "attention", "critical"):
+            return json.dumps({"error": "severity must be info, attention, or critical"})
+        path = f"/v1/sessions/{conversation_id}/inbox-notifications"
+        payload = {"title": title, "body": body, "severity": severity}
+    else:
+        target_id = args.get("session_id")
+        if not isinstance(target_id, str) or not target_id:
+            return json.dumps({"error": f"{tool_name} requires a non-empty session_id"})
+        path = f"/v1/sessions/{target_id}/events"
+        if tool_name == "sys_session_message":
+            message = args.get("message")
+            if not isinstance(message, str) or not message.strip():
+                return json.dumps({"error": "sys_session_message requires a non-empty message"})
+            payload = {
+                "type": "message",
+                "data": {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": message}],
+                },
+            }
+        else:
+            payload = {"type": "retry_session", "data": {}}
+
+    try:
+        response = await server_client.post(path, json=payload, timeout=30.0)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"{tool_name} failed: {exc}"})
+    target = conversation_id if tool_name == "sys_inbox_notify" else args.get("session_id")
+    if response.status_code == 404:
+        return json.dumps({"error": "session_not_found", "session_id": target})
+    if response.status_code in (401, 403):
+        return json.dumps({"error": "access_denied", "session_id": target})
+    if response.status_code >= 400:
+        return json.dumps(
+            {
+                "error": f"{tool_name} returned {response.status_code}",
+                "detail": response.text[:200],
+            }
+        )
+    try:
+        result = _string_object_dict(response.json())
+    except (ValueError, json.JSONDecodeError):
+        result = None
+    if result is None:
+        return json.dumps({"error": f"{tool_name} returned an invalid response"})
+    if tool_name != "sys_inbox_notify":
+        result = {"session_id": target, **result}
+    return json.dumps(result)
+
+
 async def execute_tool(
     *,
     tool_name: str,
@@ -6764,6 +6923,14 @@ async def execute_tool(
                 arguments,
                 conversation_id=conversation_id,
                 server_client=server_client,
+                agent_spec=agent_spec,
+            )
+        elif tool_name in _SESSION_CONTROL_TOOLS:
+            output = await _execute_session_control_tool(
+                tool_name,
+                args,
+                server_client=server_client,
+                conversation_id=conversation_id,
                 agent_spec=agent_spec,
             )
         elif tool_name in _WEB_FETCH_TOOLS:

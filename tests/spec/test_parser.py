@@ -3519,6 +3519,23 @@ def test_parse_spawn_true_sets_flag(tmp_path: Path) -> None:
     assert spec.spawn is True
 
 
+def test_parse_agent_session_control_defaults_false(agent_dir: Path) -> None:
+    spec = parse(agent_dir)
+
+    assert spec.agent_session_control is False
+
+
+def test_parse_agent_session_control_true(tmp_path: Path) -> None:
+    config = {
+        "spec_version": 1,
+        "name": "manager-agent",
+        "agent_session_control": True,
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    assert parse(tmp_path).agent_session_control is True
+
+
 def test_parse_share_defaults_to_none_when_omitted(agent_dir: Path) -> None:
     """
     Without a top-level ``agent_session_sharing:`` key the parsed

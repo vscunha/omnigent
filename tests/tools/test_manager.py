@@ -64,6 +64,7 @@ _ALWAYS_PRESENT_TOOLS: frozenset[str] = frozenset(
         "sys_session_get_history",
         "sys_session_list",
         "sys_session_get_info",
+        "sys_session_children",
         "sys_session_rename",
         # Read-only agent discovery tools are likewise always available
         # (global, permission-bounded reads of any accessible session's
@@ -125,6 +126,30 @@ def test_session_rename_is_registered_for_every_agent() -> None:
     names = {schema["function"]["name"] for schema in ToolManager(_make_spec()).get_tool_schemas()}
 
     assert "sys_session_rename" in names
+
+
+def test_session_children_is_registered_for_every_agent() -> None:
+    names = {schema["function"]["name"] for schema in ToolManager(_make_spec()).get_tool_schemas()}
+
+    assert "sys_session_children" in names
+
+
+def test_session_control_tools_require_dedicated_opt_in() -> None:
+    default_names = {
+        schema["function"]["name"] for schema in ToolManager(_make_spec()).get_tool_schemas()
+    }
+    enabled_names = {
+        schema["function"]["name"]
+        for schema in ToolManager(
+            AgentSpec(spec_version=1, agent_session_control=True)
+        ).get_tool_schemas()
+    }
+
+    assert {"sys_session_message", "sys_session_retry", "sys_inbox_notify"}.isdisjoint(
+        default_names
+    )
+    assert {"sys_session_message", "sys_session_retry", "sys_inbox_notify"} <= enabled_names
+    assert "sys_session_send" not in enabled_names
 
 
 @pytest.fixture()

@@ -3797,6 +3797,10 @@ def test_subagent_read_tools_are_runner_local() -> None:
     # get_info is a runner-local read like list/get_history; if it falls out of
     # the local dispatch table the orchestrator's status checks break.
     assert should_dispatch_locally("sys_session_get_info") is True
+    assert should_dispatch_locally("sys_session_children") is True
+    assert should_dispatch_locally("sys_session_message") is True
+    assert should_dispatch_locally("sys_session_retry") is True
+    assert should_dispatch_locally("sys_inbox_notify") is True
 
 
 @pytest.mark.asyncio
@@ -8771,6 +8775,9 @@ async def test_sys_session_get_info_defaults_to_caller_session() -> None:
     assert info["last_activity_at"] == 42
     assert info["pending_elicitations"] == []
     assert info["pending_elicitation_count"] == 0
+    assert info["context_window"] is None
+    assert info["context_tokens"] is None
+    assert "context_usage_percentage" not in info
     assert not any(p.startswith("/v1/runners") for p in requested_paths)
 
 
@@ -8815,6 +8822,272 @@ async def test_sys_session_get_info_maps_error_statuses(
     info = json.loads(output)
     assert info["error"] == expected_error
     assert info["session_id"] == "conv_missing"
+
+
+@pytest.mark.asyncio
+async def test_sys_session_children_projects_direct_child_state() -> None:
+    """The read tool consumes the canonical parent-id child query."""
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v1/sessions/orchestrator/child_sessions"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "worker_1",
+                        "agent_id": "agent_worker",
+                        "agent_name": "Worker",
+                        "tool": "reviewer",
+                        "session_name": "review",
+                        "title": "reviewer:review",
+                        "busy": True,
+                        "current_task_status": "in_progress",
+                        "updated_at": 123,
+                        "last_task_error": None,
+                        "pending_elicitations_count": 1,
+                    }
+                ],
+                "has_more": False,
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_children",
+            arguments=json.dumps({"session_id": "orchestrator"}),
+            server_client=server_client,
+            conversation_id="manager",
+        )
+
+    result = json.loads(output)
+    assert result["session_id"] == "orchestrator"
+    assert result["children"] == [
+        {
+            "session_id": "worker_1",
+            "agent_id": "agent_worker",
+            "agent": "reviewer",
+            "sub_agent_name": "review",
+            "title": "reviewer:review",
+            "status": "running",
+            "runner_online": None,
+            "last_activity_at": 123,
+            "last_error": None,
+            "pending_input_count": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sys_session_children_maps_permission_denial() -> None:
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_children",
+            arguments=json.dumps({"session_id": "private"}),
+            server_client=server_client,
+            conversation_id="manager",
+        )
+
+    assert json.loads(output) == {"error": "access_denied", "session_id": "private"}
+
+
+@pytest.mark.asyncio
+async def test_sys_session_message_uses_normal_event_without_subagent_bookkeeping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Independent messaging posts ordinary input and produces no manager inbox result."""
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _unexpected_bookkeeping(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError(f"cross-session message changed topology: {args!r} {kwargs!r}")
+
+    monkeypatch.setattr(subagent_work, "register_child_session", _unexpected_bookkeeping)
+    monkeypatch.setattr(subagent_work, "register_subagent_work", _unexpected_bookkeeping)
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={"accepted": True})
+
+    manager_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_message",
+            arguments=json.dumps(
+                {"session_id": "orchestrator", "message": "Check worker A's failure."}
+            ),
+            server_client=server_client,
+            conversation_id="manager",
+            agent_spec=AgentSpec(spec_version=1, agent_session_control=True),
+            session_inbox=manager_inbox,
+        )
+
+    assert captured == [
+        (
+            "/v1/sessions/orchestrator/events",
+            {
+                "type": "message",
+                "data": {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Check worker A's failure."}],
+                },
+            },
+        )
+    ]
+    assert json.loads(output) == {"session_id": "orchestrator", "accepted": True}
+    assert manager_inbox.empty()
+
+
+@pytest.mark.asyncio
+async def test_session_control_tools_fail_closed_without_capability() -> None:
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"disabled control must not reach server: {request.url}")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_message",
+            arguments=json.dumps({"session_id": "orchestrator", "message": "hello"}),
+            server_client=server_client,
+            conversation_id="manager",
+            agent_spec=AgentSpec(spec_version=1),
+        )
+
+    error = json.loads(output)["error"]
+    assert "sys_session_message" in error
+    assert "not enabled" in error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name", ("sys_session_message", "sys_session_retry", "sys_inbox_notify")
+)
+async def test_session_control_dispatcher_repeats_capability_gate(tool_name: str) -> None:
+    """A direct dispatch still refuses an ungranted supervisor mutation."""
+    from omnigent.runner.tool_dispatch import _execute_session_control_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"disabled control must not reach server: {request.url}")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await _execute_session_control_tool(
+            tool_name,
+            {"session_id": "orchestrator", "message": "hello"},
+            server_client=server_client,
+            conversation_id="manager",
+            agent_spec=AgentSpec(spec_version=1),
+        )
+
+    assert json.loads(output) == {"error": "agent_session_control_not_enabled"}
+
+
+@pytest.mark.asyncio
+async def test_sys_session_retry_reuses_retry_session_event() -> None:
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/sessions/orchestrator/events"
+        assert json.loads(request.content) == {"type": "retry_session", "data": {}}
+        return httpx.Response(
+            200,
+            json={
+                "queued": False,
+                "recovered": True,
+                "recovery": "runner_relaunched",
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_retry",
+            arguments=json.dumps({"session_id": "orchestrator"}),
+            server_client=server_client,
+            conversation_id="manager",
+            agent_spec=AgentSpec(spec_version=1, agent_session_control=True),
+        )
+
+    assert json.loads(output) == {
+        "session_id": "orchestrator",
+        "queued": False,
+        "recovered": True,
+        "recovery": "runner_relaunched",
+    }
+
+
+@pytest.mark.asyncio
+async def test_sys_inbox_notify_derives_source_from_calling_session() -> None:
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    captured: dict[str, Any] = {}
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "note_1",
+                "source_session_id": "manager",
+                "title": "Human action required",
+                "body": "Reconnect credentials.",
+                "severity": "critical",
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_inbox_notify",
+            arguments=json.dumps(
+                {
+                    "title": "Human action required",
+                    "body": "Reconnect credentials.",
+                    "severity": "critical",
+                }
+            ),
+            server_client=server_client,
+            conversation_id="manager",
+            agent_spec=AgentSpec(spec_version=1, agent_session_control=True),
+        )
+
+    assert captured == {
+        "path": "/v1/sessions/manager/inbox-notifications",
+        "body": {
+            "title": "Human action required",
+            "body": "Reconnect credentials.",
+            "severity": "critical",
+        },
+    }
+    assert json.loads(output)["source_session_id"] == "manager"
 
 
 @pytest.mark.asyncio
@@ -9164,6 +9437,8 @@ async def test_sys_session_get_info_projects_metadata_and_runner_connectivity() 
                     "sub_agent_name": "researcher",
                     "llm_model": "anthropic/claude-sonnet-4-6",
                     "model_override": "claude-opus-4-8",
+                    "context_window": 828_400,
+                    "last_total_tokens": 119_316,
                     "workspace": "/repo",
                     "git_branch": "feature/x",
                     "pending_elicitations": [{"id": "el_1"}, {"id": "el_2"}],
@@ -9210,6 +9485,12 @@ async def test_sys_session_get_info_projects_metadata_and_runner_connectivity() 
     # default. "anthropic/claude-sonnet-4-6" here would mean the
     # override was ignored.
     assert info["model"] == "claude-opus-4-8"
+    # Context telemetry is already present in the server snapshot. The
+    # supervisory projection exposes the harness-reported token count directly;
+    # it must not derive a percentage from a model-specific context window.
+    assert info["context_window"] == 828_400
+    assert info["context_tokens"] == 119_316
+    assert "context_usage_percentage" not in info
     # Two outstanding approval prompts surfaced from the snapshot — both
     # the prompts themselves and a count. If the projection dropped the
     # prompts (count-only), the orchestrator couldn't tell what the

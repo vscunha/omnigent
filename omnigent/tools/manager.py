@@ -28,18 +28,22 @@ from omnigent.tools.builtins import (
     SysAgentListTool,
     SysCallAsyncTool,
     SysCancelAsyncTool,
+    SysInboxNotifyTool,
     SysListModelsTool,
     SysReadInboxTool,
     SysScheduledTaskCreateTool,
     SysScheduledTaskDeleteTool,
     SysScheduledTaskListTool,
     SysScheduledTaskUpdateTool,
+    SysSessionChildrenTool,
     SysSessionCloseTool,
     SysSessionCreateTool,
     SysSessionGetHistoryTool,
     SysSessionGetInfoTool,
     SysSessionListTool,
+    SysSessionMessageTool,
     SysSessionRenameTool,
+    SysSessionRetryTool,
     SysSessionSendTool,
     SysSessionShareTool,
     SysTimerCancelTool,
@@ -455,6 +459,7 @@ class ToolManager:
         """
         # Read-only discovery tools: always available.
         self._tools[SysSessionListTool.name()] = SysSessionListTool()
+        self._tools[SysSessionChildrenTool.name()] = SysSessionChildrenTool()
         self._tools[SysSessionGetHistoryTool.name()] = SysSessionGetHistoryTool()
         self._tools[SysSessionGetInfoTool.name()] = SysSessionGetInfoTool()
 
@@ -471,6 +476,12 @@ class ToolManager:
             self._tools[SysSessionShareTool.name()] = SysSessionShareTool(
                 allow_public=self._spec.agent_session_sharing is SharePolicy.PUBLIC,
             )
+
+        # Independent-session mutations are a dedicated supervisor grant.
+        if self._spec.agent_session_control:
+            self._tools[SysSessionMessageTool.name()] = SysSessionMessageTool()
+            self._tools[SysSessionRetryTool.name()] = SysSessionRetryTool()
+            self._tools[SysInboxNotifyTool.name()] = SysInboxNotifyTool()
 
         # send + close: opt-in via declared sub-agents or spawn: true.
         if not (self._spec.tools.agents or self._spec.spawn):
