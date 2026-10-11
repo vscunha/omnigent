@@ -511,24 +511,47 @@ async def _publish_and_wait_for_harness_elicitation(
     """
     if elicitation_id is None:
         elicitation_id = f"elicit_{secrets.token_hex(16)}"
-    future: asyncio.Future[ElicitationResult] = asyncio.get_running_loop().create_future()
-    # ``resolved_elsewhere`` is set when a native-side signal proves the
-    # prompt was answered outside the web UI: either a mirrored tool
-    # result for this gated tool, or Codex app-server's exact
-    # ``serverRequest/resolved`` notification. Raced below so the wait
-    # ends promptly without relying on the web verdict or on disconnect
-    # detection (unreliable behind the Databricks Apps proxy).
     request_fingerprint = _harness_elicitation_request_fingerprint(params)
-    parked = _ParkedHarnessElicitation(
-        session_id=session_id,
-        tool_name=tool_name,
-        tool_input=tool_input,
-        resolved_elsewhere=asyncio.Event(),
-        request_fingerprint=request_fingerprint,
+    # A hook whose long-poll was severed retries with the SAME stable id
+    # while its earlier wait can still be parked. Re-attach to that park
+    # rather than overwrite the per-id registry: overwriting orphans the
+    # earlier waiter's Future, so only one of the two ever observes the
+    # verdict while the other holds its connection until its own timeout,
+    # and the retry re-publishes a card that is already on screen. Same
+    # session and same request fingerprint only — a different question
+    # reusing the id is a genuinely new park.
+    existing_future = _harness_elicitation_registry.get(elicitation_id)
+    existing_parked = _harness_parked_elicitations.get(elicitation_id)
+    reattached = (
+        existing_future is not None
+        and existing_parked is not None
+        and not existing_future.done()
+        and _harness_elicitation_owners.get(elicitation_id) == session_id
+        and existing_parked.request_fingerprint is not None
+        and existing_parked.request_fingerprint == request_fingerprint
     )
-    _harness_elicitation_registry[elicitation_id] = future
-    _harness_elicitation_owners[elicitation_id] = session_id
-    _harness_parked_elicitations[elicitation_id] = parked
+    if reattached:
+        assert existing_future is not None and existing_parked is not None
+        future = existing_future
+        parked = existing_parked
+    else:
+        # ``resolved_elsewhere`` is set when a native-side signal proves the
+        # prompt was answered outside the web UI: either a mirrored tool
+        # result for this gated tool, or Codex app-server's exact
+        # ``serverRequest/resolved`` notification. Raced below so the wait
+        # ends promptly without relying on the web verdict or on disconnect
+        # detection (unreliable behind the Databricks Apps proxy).
+        future = asyncio.get_running_loop().create_future()
+        parked = _ParkedHarnessElicitation(
+            session_id=session_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            resolved_elsewhere=asyncio.Event(),
+            request_fingerprint=request_fingerprint,
+        )
+        _harness_elicitation_registry[elicitation_id] = future
+        _harness_elicitation_owners[elicitation_id] = session_id
+        _harness_parked_elicitations[elicitation_id] = parked
     # settled = verdict / terminal-resolved (clear the card now); a
     # severed wait instead defers the clear so a hook retry can re-park.
     published_request = False
@@ -537,27 +560,35 @@ async def _publish_and_wait_for_harness_elicitation(
     # finally's resolved fan-out carries it (None = severed / terminal).
     settled_action: str | None = None
     try:
-        tombstone = _consume_pre_resolved_harness_elicitation(
-            session_id, elicitation_id, request_fingerprint
+        # A re-attached retry shares the original wait's outcome; the owner
+        # already published the card and owns the resolved fan-out, so it
+        # must not consume the tombstone or re-publish the request.
+        tombstone = (
+            None
+            if reattached
+            else _consume_pre_resolved_harness_elicitation(
+                session_id, elicitation_id, request_fingerprint
+            )
         )
         if tombstone is not None:
             # Verdict from the un-parked gap; None = terminal answered (fail-ask).
             return tombstone.result
-        event = ElicitationRequestEvent(
-            type="response.elicitation_request",
-            elicitation_id=elicitation_id,
-            params=params,
-        )
-        event_payload = event.model_dump()
-        session_stream.publish(session_id, event_payload)
-        published_request = True
-        if conversation_store is not None:
-            await asyncio.to_thread(
-                _publish_elicitation_request_to_ancestors,
-                conversation_store,
-                session_id,
-                event_payload,
+        if not reattached:
+            event = ElicitationRequestEvent(
+                type="response.elicitation_request",
+                elicitation_id=elicitation_id,
+                params=params,
             )
+            event_payload = event.model_dump()
+            session_stream.publish(session_id, event_payload)
+            published_request = True
+            if conversation_store is not None:
+                await asyncio.to_thread(
+                    _publish_elicitation_request_to_ancestors,
+                    conversation_store,
+                    session_id,
+                    event_payload,
+                )
         disconnect_task = asyncio.create_task(
             _poll_request_disconnect(request),
         )
@@ -608,13 +639,22 @@ async def _publish_and_wait_for_harness_elicitation(
         settled = parked.resolved_elsewhere.is_set()
         return None
     finally:
-        # Pop only our own entries — a hook retry may have re-parked
-        # this id with a new future while this wait was unwinding.
-        if _harness_elicitation_registry.get(elicitation_id) is future:
-            _harness_elicitation_registry.pop(elicitation_id, None)
-            _harness_elicitation_owners.pop(elicitation_id, None)
-        if _harness_parked_elicitations.get(elicitation_id) is parked:
-            _harness_parked_elicitations.pop(elicitation_id, None)
+        # The park's owner owns teardown. A re-attached retry only shares
+        # the outcome, so it must leave the registry alone — otherwise it
+        # would strand the original waiter it attached to.
+        if not reattached:
+            # Pop only our own entries — a hook retry may have re-parked
+            # this id with a new future while this wait was unwinding.
+            if _harness_elicitation_registry.get(elicitation_id) is future:
+                _harness_elicitation_registry.pop(elicitation_id, None)
+                _harness_elicitation_owners.pop(elicitation_id, None)
+            if _harness_parked_elicitations.get(elicitation_id) is parked:
+                _harness_parked_elicitations.pop(elicitation_id, None)
+            if not settled:
+                # Retries attached to this park wait on the same
+                # future/event; release them instead of letting each sit
+                # out its own timeout behind a park that is now gone.
+                parked.resolved_elsewhere.set()
         delivery = getattr(params, "native_delivery", None)
         if published_request and (
             not settled or (delivery is not None and settled_action is not None)
@@ -2448,7 +2488,10 @@ async def _resolve_elicitation(
             # question that reuses this id must not inherit the verdict.
             gap_fingerprint: str | None = None
             pending_entry = pending_elicitations.lookup(elicitation_id, conversation_id=session_id)
-            if pending_entry is not None:
+            # The scoped lookup already restricts the entry to this session, so
+            # a hit is exactly the answered prompt this verdict belongs to.
+            answered_orphan = pending_entry is not None
+            if answered_orphan and pending_entry is not None:
                 try:
                     gap_fingerprint = _harness_elicitation_request_fingerprint(
                         ElicitationRequestParams.model_validate(pending_entry[1].get("params"))
@@ -2463,6 +2506,28 @@ async def _resolve_elicitation(
                 request_fingerprint=gap_fingerprint,
             )
             _prune_pre_resolved_harness_elicitations()
+            # Nothing was waiting on this verdict, so no side effect (a policy
+            # write, say) is applied here: the tombstone only pays off if a
+            # hook re-parks the same question before the TTL. Leave a trace —
+            # an accepted approval must not disappear without one.
+            if answered_orphan and gap_fingerprint is None:
+                _logger.warning(
+                    "Approval %s for session %s was accepted with nothing parked "
+                    "and its prompt could not be fingerprinted, so a re-park can "
+                    "never adopt it (action=%s)",
+                    elicitation_id,
+                    session_id,
+                    pre_resolved.action,
+                )
+            else:
+                _logger.info(
+                    "Approval %s for session %s landed with nothing parked; "
+                    "tombstoned for a re-park (action=%s, adoptable=%s)",
+                    elicitation_id,
+                    session_id,
+                    pre_resolved.action,
+                    gap_fingerprint is not None,
+                )
     # Wake a currently-parked long-poll via resolved_elsewhere, not only its
     # Future: setting the Future alone races the sever/re-park cycle and the
     # ASK-gated call hangs. Set the event directly; the signal helper's
