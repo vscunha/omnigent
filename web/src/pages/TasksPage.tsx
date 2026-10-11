@@ -147,6 +147,11 @@ export function TasksPage() {
   }
 
   const hasAnyTasks = (tasks ?? []).length > 0;
+  // React Query keeps the last successful value while a background refetch is
+  // failing. Preserve that data so a transient run-now/list race never blanks
+  // the page; only the initial load should replace the page with a blocking
+  // error state.
+  const hasTaskData = tasks !== undefined;
 
   return (
     <PageScroll contentClassName="px-4 md:px-6">
@@ -208,7 +213,26 @@ export function TasksPage() {
         )}
       </div>
 
-      {isError ? (
+      {isError && hasTaskData && (
+        <div
+          role="status"
+          data-testid="tasks-refresh-error"
+          className="mb-3 flex items-center gap-2 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-ui text-muted-foreground"
+        >
+          <TriangleAlertIcon className="size-4 shrink-0 text-destructive" />
+          <span className="flex-1">Couldn’t refresh automations.</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void refetch()}
+            componentId="tasks.refresh-retry"
+          >
+            Retry
+          </Button>
+        </div>
+      )}
+
+      {isError && !hasTaskData ? (
         <div
           role="alert"
           data-testid="tasks-load-error"
@@ -225,7 +249,7 @@ export function TasksPage() {
             Retry
           </Button>
         </div>
-      ) : isLoading ? (
+      ) : isLoading && !hasTaskData ? (
         <div className="flex items-center gap-2 py-12 text-ui text-muted-foreground">
           <Loader2Icon className="size-4 animate-spin" />
           Loading automations…

@@ -178,6 +178,16 @@ describe("TasksPage list", () => {
     expect(screen.queryAllByTestId("new-task-button")).toHaveLength(1);
   });
 
+  it("keeps the current list visible when a background refresh fails", () => {
+    // Run-now invalidates the list while its background fire may briefly hold
+    // the database. A transient refresh error must not blank the page or force
+    // the user to reopen it; the next poll/retry can reconcile the same rows.
+    setTasks([task()], { isError: true });
+    renderPage();
+    expect(screen.getByTestId("scheduled-task-row")).toBeInTheDocument();
+    expect(screen.queryByTestId("tasks-load-error")).toBeNull();
+  });
+
   it("shows compact suggestion chips in the true empty state", () => {
     setTasks([]);
     renderPage();

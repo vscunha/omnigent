@@ -117,6 +117,10 @@ export function useRunScheduledTaskNow() {
     onSuccess: (_data, id) => {
       void queryClient.invalidateQueries({ queryKey: SCHEDULED_TASKS_KEY });
       void queryClient.invalidateQueries({ queryKey: scheduledTaskRunsKey(id) });
+      // The fire path creates the agent conversation in the background. Keep
+      // the persistent sidebar in sync with a manual run instead of waiting
+      // for its low-rate reconciliation poll or a full page reload.
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
   });
 }

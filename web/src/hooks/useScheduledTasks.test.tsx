@@ -120,5 +120,9 @@ describe("mutations invalidate the list", () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: SCHEDULED_TASKS_KEY });
     // …and the fired task's run history.
     expect(spy).toHaveBeenCalledWith({ queryKey: scheduledTaskRunsKey("st_1") });
+    // A run creates a new conversation asynchronously. Refresh the global
+    // conversation cache too so the persistent sidebar can discover it without
+    // a page reload or waiting for its background poll.
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["conversations"] });
   });
 });

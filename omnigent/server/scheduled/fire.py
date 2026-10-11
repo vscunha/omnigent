@@ -70,6 +70,7 @@ from omnigent.server.routes._session_create_validation import (
     validate_session_model_metadata,
     validate_session_permission_mode,
 )
+from omnigent.server.routes._sessions.helpers import _set_read_state
 from omnigent.server.schemas import SessionCreateRequest, SessionEventInput
 
 _logger = logging.getLogger(__name__)
@@ -538,6 +539,14 @@ async def _run_fire_for_task(
                 task.id,
                 conv.id,
             )
+
+        # A scheduled run is a background message, not a user-created blank
+        # session. Persist its initial unread state before dispatch so the
+        # sidebar can show the completed result even when the project folder
+        # was collapsed while the task ran.
+        read_state_user = task.user_id if deps.permission_store is not None else None
+        created_at = int(getattr(conv, "updated_at", scheduled_at))
+        _set_read_state(read_state_user, conv.id, created_at - 1, True)
 
         try:
             await dispatch(conv, effective)

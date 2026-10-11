@@ -159,6 +159,13 @@ export function seedReadState(conversations: readonly ReadStateSeed[]): void {
     if (baseline === undefined && typeof conv.updated_at === "number") {
       baseline = conv.updated_at;
     }
+    // An explicit server-side unread flag is authoritative.  A stale local
+    // baseline must not hide a newly-created background session's first
+    // message; pin it just below the current timestamp, matching
+    // markConversationUnread().
+    if (conv.viewer_unread && typeof conv.updated_at === "number") {
+      baseline = conv.updated_at - 1;
+    }
     if (baseline !== undefined && baseline !== local) {
       lastSeenMap[conv.id] = baseline;
       changed = true;

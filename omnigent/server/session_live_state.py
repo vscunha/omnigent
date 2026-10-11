@@ -16,13 +16,13 @@ also enqueues a row write here. Writes are:
 - **best-effort** — a failed write logs and is dropped; live state is
   display state, and the next transition rewrites it. A dropped write
   also evicts its dedupe entry, so the next *identical* publish is not
-  swallowed and gets a fresh attempt (see :func:`_submit`).
+  swallowed and gets a fresh attempt (see :func:`submit`).
 - **ordered** — a single-worker executor serializes writes, so a
   ``running`` → ``idle`` pair can never apply out of order.
 - **off the event loop** — the store is synchronous SQLAlchemy; callers
   (the SSE relay, the tunnel handlers, the pub-sub hot path) only pay a
   dict check and a queue put. The write runs in a copy of the caller's
-  ``contextvars`` (see :func:`_submit`) so the per-request
+  ``contextvars`` (see :func:`submit`) so the per-request
   ``workspace_scope`` — which every store query filters on — reaches the
   worker thread; a bare executor would run at the default workspace and
   every ``WHERE workspace_id == …`` would match no rows on a multi-tenant
@@ -216,7 +216,7 @@ def persist_scheduled_run_completion(
 
     Runs on the SAME ordered single-worker executor as
     :func:`persist_live_status`, inside a copy of the caller's ``contextvars``
-    (see :func:`_submit`). This is load-bearing: the store filters every query
+    (see :func:`submit`). This is load-bearing: the store filters every query
     on ``current_workspace_id()``, and the reverse lookup + ``update_run`` must
     resolve to the fired run's workspace — the relay call site's
     ``workspace_scope`` reaches the worker thread exactly as it does for the
