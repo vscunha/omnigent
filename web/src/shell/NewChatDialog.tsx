@@ -1737,11 +1737,21 @@ export function AgentHarnessPicker({
       : "Other...";
 
   // Split the agents group: built-in bundle agents (Polly / Debby) stay inline
-  // in the main list; user-registered custom agents fold into an "Other..."
-  // submenu so a long roster doesn't crowd out the recommended picks.
+  // in the main list. A custom profile backed by a native harness is also a
+  // directly selectable terminal choice, so keep it visible in the first
+  // level. Non-native custom agents still fold into the "Other..." submenu so a
+  // long roster does not crowd out the recommended picks.
   const { builtins: bundleEntries, customs: customEntries } = useMemo(
     () => partitionAgentsByKind(agentEntries),
     [agentEntries],
+  );
+  const inlineCustomEntries = useMemo(
+    () => customEntries.filter((agent) => isNativeCodingAgent(agent)),
+    [customEntries],
+  );
+  const foldedCustomEntries = useMemo(
+    () => customEntries.filter((agent) => !isNativeCodingAgent(agent)),
+    [customEntries],
   );
 
   // Existing custom / pending agents fold into an "Other..." submenu so a
@@ -1750,7 +1760,7 @@ export function AgentHarnessPicker({
   // discover it — so we surface "Create custom agent" as a top-level row
   // instead (see below). The submenu therefore renders only when there is at
   // least one custom / pending agent to group.
-  const hasCustomAgents = customEntries.length > 0 || pendingAgent != null;
+  const hasCustomAgents = foldedCustomEntries.length > 0 || pendingAgent != null;
   // "Create custom agent" is reachable on any non-sandbox target (a managed
   // sandbox has no create path for an uploaded bundle), unless the embedder
   // opts out (it has no create flow to route the action to).
@@ -1770,7 +1780,7 @@ export function AgentHarnessPicker({
   // the custom agents, the pending upload, and the create action.
   const customAgentsBody = (
     <>
-      {customEntries.map(renderEntry)}
+      {foldedCustomEntries.map(renderEntry)}
       {pendingAgent && (
         <DropdownMenuItem
           key={pendingAgentId}
@@ -2025,6 +2035,7 @@ export function AgentHarnessPicker({
           {/* Agents group — built-in bundle agents (Polly / Debby) inline. */}
           <PickerSectionHeader>Agents</PickerSectionHeader>
           {bundleEntries.map(renderEntry)}
+          {inlineCustomEntries.map(renderEntry)}
           {/* Existing custom agents fold into an "Other..." submenu (with
             the pending upload and the create action). With no custom agents the
             submenu would hold only "Create custom agent", so we surface that as
@@ -2243,17 +2254,12 @@ export function NewChatLandingScreen() {
   // and "Agents" (composed SDK / bundle agents like Polly & Debby plus custom
   // user-registered agents). Harness-backed vs composed, NOT the builtins/customs
   // split: Polly & Debby are built-ins but are composed agents, so they stay
-  // under "Agents". ACP agents aren't native, so they fold into "More". The
-  // user's own agents stay under "Agents" even on a native harness, so one never
-  // passes for a harness row (or for the Claude Code wrapper Smart Routing binds).
-  const harnessEntries = useMemo(
-    () => agentList.filter((a) => !a.mine && (isNativeCodingAgent(a) || isAcpHarnessAgent(a))),
-    [agentList],
-  );
-  const agentEntries = useMemo(
-    () => agentList.filter((a) => a.mine || (!isNativeCodingAgent(a) && !isAcpHarnessAgent(a))),
-    [agentList],
-  );
+  // Keep built-in native harnesses in the Harnesses section; user-registered
+  // templates remain in Agents even when they declare a native harness id.
+  const isNativeHarnessRow = (a: AvailableAgent): boolean =>
+    (isNativeCodingAgent(a) && a.builtin !== false) || isAcpHarnessAgent(a);
+  const harnessEntries = useMemo(() => agentList.filter(isNativeHarnessRow), [agentList]);
+  const agentEntries = useMemo(() => agentList.filter((a) => !isNativeHarnessRow(a)), [agentList]);
 
   // "Create custom agent" dialog state and pending bundle. When the user
   // creates a custom agent via the dialog, the bundle input is stored
@@ -5547,6 +5553,7 @@ export function NewChatLandingScreen() {
       const initialPrompt =
         buildMentionPreamble(mentionedItems, selectedAgent?.harness ?? null) +
         sanitizeInitialPrompt(message);
+
       // Native terminal agents open terminal-first: `omnigent.ui: terminal`
       // tells the UI to render the terminal wrapper, and `omnigent.wrapper`
       // selects which CLI bridge the runner launches — the values are the

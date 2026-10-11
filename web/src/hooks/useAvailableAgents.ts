@@ -59,6 +59,10 @@ export interface AvailableAgent {
   // session-discovered agents (custom uploads); absent on catalog agents
   // whose full data is already present from GET /v1/agents.
   sessionId?: string;
+  // Set after the best-effort session-agent detail fetch completes. This is
+  // separate from harness/description because a session row can start with
+  // catalog metadata while the authoritative session copy is still fetched.
+  detailsFetched?: boolean;
 }
 
 const DISPLAY_NAMES: Record<string, string> = {
@@ -66,9 +70,21 @@ const DISPLAY_NAMES: Record<string, string> = {
   nessie: "Nessie",
   polly: "Polly",
   debby: "Debby",
+  // CryptoPlatformWorkspace execution profiles (user-registered templates).
+  "crypto-platform-codex": "Crypto Platform — Codex",
+  "crypto-platform-opencode-go": "Crypto Platform — OpenCode Go",
 };
 
-function displayNameForAgent(name: string, harness?: string | null): string {
+function displayNameForAgent(
+  name: string,
+  harness?: string | null,
+  builtin?: boolean | null,
+): string {
+  // User-registered templates (builtin === false) display their own name;
+  // only seeded native rows adopt the native harness display name.
+  if (builtin === false) {
+    return DISPLAY_NAMES[name] ?? capitalizeAgentName(name);
+  }
   return (
     nativeCodingAgentForHarness(harness)?.displayName ??
     nativeCodingAgentForAgentName(name)?.displayName ??
@@ -148,7 +164,7 @@ function agentFromWire(a: BuiltinAgentWire): AvailableAgent {
   return {
     id: a.id,
     name: a.name,
-    display_name: displayNameForAgent(a.name, a.harness),
+    display_name: displayNameForAgent(a.name, a.harness, a.builtin),
     description: a.description ?? null,
     harness: a.harness ?? null,
     skills: a.skills ?? [],
@@ -242,6 +258,26 @@ function sessionAgentFromDiscovery(discovered: DiscoveredSessionAgent): Availabl
 }
 
 /**
+ * Carry catalog metadata onto a session-discovered clone.
+ *
+ * A fork/switch clone can be newer than the registered template while still
+ * carrying the same profile. Keep the session id (it is the bind target), but
+ * retain the catalog metadata until the authoritative session-agent lookup
+ * runs. This prevents native profiles from becoming anonymous rows.
+ */
+function sessionAgentWithTemplate(agent: AvailableAgent, template: AvailableAgent): AvailableAgent {
+  return {
+    ...agent,
+    display_name: template.display_name,
+    description: template.description,
+    harness: template.harness,
+    skills: template.skills,
+    ...(template.builtin !== undefined ? { builtin: template.builtin } : {}),
+    ...(template.acpHarness !== undefined ? { acpHarness: template.acpHarness } : {}),
+  };
+}
+
+/**
  * Fetch harness, description, and skills for a session-discovered agent and
  * patch them into the ["available-agents"] cache. Call on hover so the data
  * is ready before the user clicks — zero cost for agents they never hover.
@@ -250,7 +286,7 @@ export async function prefetchAvailableAgentDetails(
   agent: AvailableAgent,
   queryClient: QueryClient,
 ): Promise<void> {
-  if (!agent.sessionId || agent.harness !== null || agent.description !== null) return;
+  if (!agent.sessionId || agent.detailsFetched === true) return;
   try {
     const res = await authenticatedFetch(
       `/v1/sessions/${encodeURIComponent(agent.sessionId)}/agent`,
@@ -265,30 +301,66 @@ export async function prefetchAvailableAgentDetails(
           ? a
           : {
               ...a,
-              display_name: displayNameForAgent(json.name, json.harness),
+              // A session-bound row may be a user-authored profile that uses
+              // a native harness. Keep the name chosen during discovery (or
+              // copied from its catalog template) instead of replacing it
+              // with the native vendor label after enrichment.
+              display_name: a.sessionId
+                ? a.display_name
+                : displayNameForAgent(json.name, json.harness, a.builtin),
               description: json.description ?? null,
               harness: json.harness ?? null,
               skills: json.skills ?? [],
+              detailsFetched: true,
             },
       );
-      // If enrichment reveals this agent is a native coding agent (e.g. a
-      // kiro-native session with a non-canonical name), remove it when a
-      // seeded built-in with the same native key already exists so it doesn't
-      // surface as a duplicate picker row.
-      const enrichedAgent = enriched.find((a) => a.id === agent.id);
-      const enrichedKey = enrichedAgent
-        ? nativeCodingAgentForAvailableAgent(enrichedAgent)?.key
-        : undefined;
-      if (enrichedKey) {
-        const builtinExists = enriched.some(
-          (a) => a.id !== agent.id && nativeCodingAgentForAvailableAgent(a)?.key === enrichedKey,
-        );
-        if (builtinExists) return enriched.filter((a) => a.id !== agent.id);
-      }
+      // Discovery decides which rows are genuine built-in shadows before this
+      // lazy enrichment runs (by canonical agent name and id). Do not remove
+      // a session row merely because its user-authored profile happens to use
+      // the same native harness as a built-in — that is a valid custom agent.
       return enriched;
     });
   } catch {
     // Best-effort — agent stays name-only on failure.
+  }
+}
+
+/** Wire row of the pinned-agent session lookup, GET /v1/sessions?agent_id=… */
+interface SessionListItemWire {
+  id: string;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  created_at?: number | null;
+}
+
+/**
+ * Direct lookup for a pinned agent the bounded discovery missed (its only
+ * sessions are archived or paginated out of the loaded window): any one
+ * session bound to it names it and anchors the on-hover detail fetch.
+ * null when no such session is visible to the caller — the agent is
+ * genuinely unresolvable and the consumer surfaces that explicitly.
+ */
+async function lookupPinnedAgent(agentId: string): Promise<AvailableAgent | null> {
+  try {
+    const res = await authenticatedFetch(
+      `/v1/sessions?limit=1&kind=any&include_archived=true&visibility=all&agent_id=${encodeURIComponent(agentId)}`,
+    );
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data: SessionListItemWire[] };
+    const row = body.data[0];
+    if (!row?.agent_id || !row.agent_name) return null;
+    return {
+      id: row.agent_id,
+      name: row.agent_name,
+      display_name: displayNameForAgent(row.agent_name),
+      description: null,
+      harness: null,
+      skills: [],
+      sessionId: row.id,
+      created_at: row.created_at ?? null,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -323,14 +395,25 @@ async function fetchAvailableAgents(
     agent,
   }));
   const merged = mergeAvailableAgents(catalog, discovered, userAgents);
-  for (const id of pinnedAgentIds) {
-    if (merged.some((agent) => agent.id === id)) continue;
-    const agent =
-      sessionAgents.find((a) => a.id === id) ??
-      catalog.find((a) => a.id === id) ??
-      userAgents.find((a) => a.id === id);
-    if (agent) merged.push(agent);
-  }
+  // Pinned-survival pass: restore every pinned id the merge lost (from the
+  // discovery when it saw the agent but a same-named newer row won its bucket),
+  // from the catalog when the pin is a registered template with no sessions,
+  // or via a direct lookup when neither source saw it.
+  const missingPinned = pinnedAgentIds.filter((id) => !merged.some((agent) => agent.id === id));
+  const restored = await Promise.all(
+    missingPinned.map(async (id) => {
+      const seen = sessionAgents.find((a) => a.id === id);
+      if (seen !== undefined) {
+        const template = [...catalog, ...userAgents].find(
+          (candidate) => agentRootName(candidate.name) === agentRootName(seen.name),
+        );
+        return template === undefined ? seen : sessionAgentWithTemplate(seen, template);
+      }
+      const known = catalog.find((a) => a.id === id) ?? userAgents.find((a) => a.id === id);
+      return known ?? (await lookupPinnedAgent(id));
+    }),
+  );
+  merged.push(...restored.filter((a): a is AvailableAgent => a !== null));
   return merged;
 }
 
@@ -393,7 +476,14 @@ function mergeAvailableAgents(
     const recency = agent.createdAt ?? 0;
     const existing = byName.get(base);
     if (!existing || recency > existing.recency) {
-      byName.set(base, { recency, template: null, discovered: agent });
+      byName.set(base, {
+        recency,
+        // Keep the catalog row as metadata when a newer session-scoped copy
+        // wins the name bucket. The session id still controls where a new
+        // session binds; the metadata is refreshed lazily on hover.
+        template: existing?.template ?? null,
+        discovered: agent,
+      });
     }
   }
 
@@ -410,7 +500,13 @@ function mergeAvailableAgents(
   }
 
   const resolved = Array.from(byName.values())
-    .map((c) => (c.template !== null ? c.template : sessionAgentFromDiscovery(c.discovered!)))
+    .map((c) =>
+      c.template !== null
+        ? c.discovered === null
+          ? c.template
+          : sessionAgentWithTemplate(c.discovered.agent, c.template)
+        : sessionAgentFromDiscovery(c.discovered!),
+    )
     .filter((agent) => {
       const nativeKey = nativeCodingAgentForAvailableAgent(agent)?.key;
       return nativeKey !== "kiro" || !hasKiroBuiltin;

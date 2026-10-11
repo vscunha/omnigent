@@ -377,8 +377,8 @@ const CODEX_MODEL_OPTIONS_RESULT = {
       id: "databricks-gpt-5-5",
       displayName: "GPT-5.5",
       isDefault: true,
-      // Codex's catalog advertises a per-model effort ladder; the config
-      // modal's Effort row is built from exactly this metadata.
+      // Codex's catalog advertises a per-model effort ladder; the adjacent
+      // selector and the gear modal's Effort row are built from this metadata.
       supportedReasoningEfforts: [
         { reasoningEffort: "low" },
         { reasoningEffort: "medium" },
@@ -7571,13 +7571,16 @@ describe("NewChatLandingScreen", () => {
     // The sandbox option is pinned FIRST in the menu, above the host list —
     // DOCUMENT_POSITION_FOLLOWING means the host item comes after it.
     const sandboxOption = screen.getByTestId("new-chat-landing-sandbox-option");
-    const hostItem = screen.getByTestId("new-chat-landing-host-host_1");
+    const hostItem = screen
+      .getAllByText("This machine")
+      .find((el) => el.closest('[role="menuitem"]') !== null);
+    expect(hostItem).toBeTruthy();
     expect(
-      sandboxOption.compareDocumentPosition(hostItem) & Node.DOCUMENT_POSITION_FOLLOWING,
+      sandboxOption.compareDocumentPosition(hostItem!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     // Picking the host restores the workspace flow (file-browser chip,
     // worktree chip) — the sandbox default doesn't wedge the normal path.
-    fireEvent.click(hostItem);
+    fireEvent.click(hostItem!);
     await waitFor(() =>
       expect(
         screen.getByTestId("new-chat-landing-host-chip").getAttribute("aria-label"),
@@ -9282,6 +9285,66 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
     );
   });
 
+  it("shows custom native-harness profiles in the primary Agents list", () => {
+    // Operator-registered profiles can use a native harness while still
+    // carrying their own instructions, tools, and child-agent configuration.
+    // A user profile backed by a native harness is still a selectable custom
+    // profile, but it must not be hidden behind the custom-agent flyout.
+    mockAgents([
+      {
+        id: "a1",
+        name: "claude-native-ui",
+        display_name: "Claude Code",
+        description: null,
+        harness: "claude-native",
+        skills: [],
+        builtin: true,
+      },
+      {
+        id: "ag_crypto_codex",
+        name: "crypto-platform-codex",
+        display_name: "Crypto Platform — Codex",
+        description: "Crypto Platform Codex profile",
+        harness: "codex-native",
+        skills: [],
+        builtin: false,
+      },
+      {
+        id: "ag_crypto_opencode",
+        name: "crypto-platform-opencode-go",
+        display_name: "Crypto Platform — OpenCode Go",
+        description: "Crypto Platform OpenCode Go profile",
+        harness: "opencode-native",
+        skills: [],
+        builtin: false,
+      },
+    ]);
+    renderLanding();
+    openPicker();
+
+    expect(screen.getByTestId("new-chat-landing-agent-ag_crypto_codex")).toBeTruthy();
+    expect(screen.getByTestId("new-chat-landing-agent-ag_crypto_opencode")).toBeTruthy();
+  });
+
+  it("keeps non-native custom profiles behind the Custom agents group", () => {
+    mockAgents([
+      {
+        id: "ag_custom",
+        name: "my-custom-agent",
+        display_name: "My Custom Agent",
+        description: "A composed custom profile",
+        harness: "claude-sdk",
+        skills: [],
+        builtin: false,
+      },
+    ]);
+    renderLanding();
+    openPicker();
+
+    expect(screen.queryByTestId("new-chat-landing-agent-ag_custom")).toBeNull();
+    expect(screen.getByTestId("new-chat-landing-custom-agents")).toBeTruthy();
+  });
+
   it("hides Codex's transport namespace in the new-session model label", () => {
     const wireModel = "system.ai.gpt-6-astra";
     useHostModelOptionsMock.mockImplementation(
@@ -9383,12 +9446,19 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
 
   it("hides Edit for a harness with no configurable settings", () => {
     mockAgents([
-      testAgent("a_bare", "opencode-native-ui", {
-        display_name: "OpenCode",
-        harness: "opencode-native",
-      }),
+      {
+        id: "a_bare",
+        name: "kimi-native-ui",
+        display_name: "Kimi",
+        description: null,
+        harness: "kimi-native",
+        skills: [],
+        builtin: false,
+      },
     ]);
     renderLanding({ smart_routing_enabled: true });
+    // Kimi has no configurable knobs; its user-registered native template
+    // remains under Agents rather than being promoted to Harnesses.
     openPicker();
     expect(screen.getByTestId("new-chat-landing-agent-a_bare")).toBeVisible();
     expect(screen.queryByTestId("new-chat-landing-agent-config-a_bare")).toBeNull();
@@ -9435,7 +9505,11 @@ describe("NewChatLandingScreen custom-agent sandbox gating", () => {
       ),
     );
     fireEvent.pointerDown(screen.getByTestId("new-chat-landing-host-chip"), { button: 0 });
-    fireEvent.click(screen.getByTestId("new-chat-landing-host-host_1"));
+    const hostItem = screen
+      .getAllByText("This machine")
+      .find((el) => el.closest('[role="menuitem"]') !== null);
+    expect(hostItem).toBeTruthy();
+    fireEvent.click(hostItem!);
     await waitFor(() =>
       expect(
         screen.getByTestId("new-chat-landing-host-chip").getAttribute("aria-label"),
@@ -9452,7 +9526,7 @@ describe("NewChatLandingScreen custom-agent sandbox gating", () => {
     }
   });
 
-  it("lists your own agent on a native harness under Other..., not among the harnesses", async () => {
+  it("lists your own agent on a native harness inline among the agent choices", async () => {
     mockAgents([
       ...DEFAULT_LANDING_AGENTS,
       testAgent("ag_orion", "orion", {
@@ -9465,8 +9539,6 @@ describe("NewChatLandingScreen custom-agent sandbox gating", () => {
     renderLanding({ agent_install: true });
 
     fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
-    expect(screen.queryByTestId("new-chat-landing-agent-ag_orion")).toBeNull();
-    fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
     expect(await screen.findByTestId("new-chat-landing-agent-ag_orion")).toBeVisible();
   });
 
@@ -9562,7 +9634,10 @@ describe("NewChatLandingScreen custom-agent sandbox gating", () => {
       ),
     );
     fireEvent.pointerDown(screen.getByTestId("new-chat-landing-host-chip"), { button: 0 });
-    fireEvent.click(screen.getByTestId("new-chat-landing-host-host_1"));
+    const hostItem = screen
+      .getAllByText("This machine")
+      .find((el) => el.closest('[role="menuitem"]') !== null);
+    fireEvent.click(hostItem!);
     await waitFor(() =>
       expect(
         screen.getByTestId("new-chat-landing-host-chip").getAttribute("aria-label"),

@@ -643,6 +643,49 @@ describe("useAvailableAgents", () => {
     ]);
   });
 
+  it("keeps a custom session profile when its harness matches a native built-in", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const opencodeBuiltin = {
+      id: "ag_opencode",
+      name: "opencode-native-ui",
+      display_name: "OpenCode",
+      description: null,
+      harness: "opencode-native",
+      skills: [],
+    };
+    const customProfile = {
+      id: "ag_custom_opencode",
+      name: "my-opencode-agent",
+      display_name: "My-opencode-agent",
+      description: null,
+      harness: null,
+      skills: [],
+      sessionId: "conv_custom_opencode",
+    };
+    queryClient.setQueryData(["available-agents"], [opencodeBuiltin, customProfile]);
+
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        id: customProfile.id,
+        object: "agent",
+        name: customProfile.name,
+        harness: "opencode-native",
+        skills: [],
+      }),
+    );
+
+    await prefetchAvailableAgentDetails(customProfile, queryClient);
+
+    expect(queryClient.getQueryData(["available-agents"])).toEqual([
+      opencodeBuiltin,
+      {
+        ...customProfile,
+        harness: "opencode-native",
+        detailsFetched: true,
+      },
+    ]);
+  });
+
   it("collapses same-named custom agents with distinct agent_ids to the newest agent row", async () => {
     routeFetch({
       [BUILTINS_URL]: mockResponse({ object: "list", data: [], has_more: false }),
@@ -698,6 +741,55 @@ describe("useAvailableAgents", () => {
         skills: [],
         sessionId: expect.any(String),
         created_at: 1,
+      },
+    ]);
+  });
+
+  it("preserves catalog metadata when a newer same-named session row wins", async () => {
+    // A fork of a registered native profile gets a fresh session-scoped agent
+    // id, but the scan row only carries its name and recency. It must retain
+    // the catalog harness/description so the profile remains identifiable in
+    // the custom-agent picker instead of looking like an unrelated blank row.
+    routeFetch({
+      [BUILTINS_URL]: mockResponse({
+        object: "list",
+        data: [
+          {
+            id: "ag_template",
+            name: "crypto-platform-codex",
+            description: "Crypto Platform Codex profile",
+            harness: "codex-native",
+            builtin: false,
+            created_at: 100,
+          },
+        ],
+        has_more: false,
+      }),
+      [MINE_URL]: sessionResponse({
+        object: "list",
+        data: [
+          {
+            id: "ag_codex_fork",
+            name: "crypto-platform-codex",
+            created_at: 200,
+          },
+        ],
+        has_more: false,
+      }),
+    });
+    const { result } = renderHook(() => useAvailableAgents(), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual([
+      {
+        id: "ag_codex_fork",
+        name: "crypto-platform-codex",
+        display_name: "Crypto Platform — Codex",
+        description: "Crypto Platform Codex profile",
+        harness: "codex-native",
+        skills: [],
+        builtin: false,
+        sessionId: "session_0",
+        created_at: 200,
       },
     ]);
   });
@@ -918,6 +1010,7 @@ describe("prefetchAvailableAgentDetails", () => {
         display_name: "Doc-writer",
         description: "Documentation specialist",
         harness: "claude-sdk",
+        detailsFetched: true,
         sessionId: "conv_3",
         skills: [{ name: "humanizer", description: "Remove AI writing patterns" }],
       },
@@ -925,12 +1018,13 @@ describe("prefetchAvailableAgentDetails", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/v1/sessions/conv_3/agent");
   });
 
-  it("is a no-op when harness is already populated", async () => {
+  it("is a no-op when session-agent details were already fetched", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const agent = testAgent("ag_doc", "doc-writer", {
       display_name: "Doc-writer",
       harness: "claude-sdk",
       sessionId: "conv_3",
+      detailsFetched: true,
     });
     queryClient.setQueryData(["available-agents"], [agent]);
 
@@ -970,11 +1064,10 @@ describe("prefetchAvailableAgentDetails", () => {
     expect(queryClient.getQueryData(["available-agents"])).toEqual([agent]);
   });
 
-  it("removes a session agent when enrichment reveals it is a native shadow", async () => {
-    // A session bound a kiro agent with a non-canonical name ("kiro-naitive"
-    // typo). On initial load harness is null so it passes the kiro filter.
-    // prefetchAvailableAgentDetails detects harness: "kiro-native" after
-    // enrichment and removes the agent since a seeded kiro built-in exists.
+  it("does not drop a session agent during native-harness enrichment", async () => {
+    // A session-bound profile may use a native harness while still being a
+    // distinct user-authored agent. Enrichment must fill its metadata without
+    // treating the shared harness as proof that it shadows the built-in row.
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const kiroBuiltin = testAgent("ag_kiro", "kiro-native-ui", {
       display_name: "Kiro",
@@ -999,8 +1092,14 @@ describe("prefetchAvailableAgentDetails", () => {
 
     await prefetchAvailableAgentDetails(kiroShadow, queryClient);
 
-    // Shadow removed; only the seeded built-in remains.
-    expect(queryClient.getQueryData(["available-agents"])).toEqual([kiroBuiltin]);
+    expect(queryClient.getQueryData(["available-agents"])).toEqual([
+      kiroBuiltin,
+      {
+        ...kiroShadow,
+        harness: "kiro-native",
+        detailsFetched: true,
+      },
+    ]);
   });
 });
 

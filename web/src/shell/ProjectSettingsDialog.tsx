@@ -34,9 +34,9 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useProjectConfig, useUpdateProjectConfig } from "@/hooks/useConversations";
-import { useAvailableAgents } from "@/hooks/useAvailableAgents";
+import { useAvailableAgents, type AvailableAgent } from "@/hooks/useAvailableAgents";
 import { useHostModelOptions, useHosts } from "@/hooks/useHosts";
-import { selectableSessionAgents } from "@/lib/agentGrouping";
+import { isAcpHarnessAgent, selectableSessionAgents } from "@/lib/agentGrouping";
 import { sandboxOptionLabel } from "@/lib/capabilities";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { readAlwaysUseWorktree } from "@/lib/worktreeDefaultPreferences";
@@ -259,9 +259,13 @@ export function ProjectSettingsDialog({
   // Same resolver as the composer's picker (selectableSessionAgents): the two
   // surfaces must offer the SAME set, or a project could pin a default the
   // composer refuses to show — and then silently substitutes another for.
+  // User-registered templates (builtin === false) stay in the agents group
+  // even when their harness matches a native harness id.
   const agentList = useMemo(() => selectableSessionAgents(agents ?? []), [agents]);
-  const harnessEntries = useMemo(() => agentList.filter(isNativeCodingAgent), [agentList]);
-  const agentEntries = useMemo(() => agentList.filter((a) => !isNativeCodingAgent(a)), [agentList]);
+  const isNativeHarnessRow = (a: AvailableAgent): boolean =>
+    (isNativeCodingAgent(a) && a.builtin !== false) || isAcpHarnessAgent(a);
+  const harnessEntries = useMemo(() => agentList.filter(isNativeHarnessRow), [agentList]);
+  const agentEntries = useMemo(() => agentList.filter((a) => !isNativeHarnessRow(a)), [agentList]);
   const selectedAgent = agentList.find((a) => a.id === agentId) ?? null;
   const agentLabel = selectedAgent ? selectedAgent.display_name : "No default";
   // Model default is offered for harnesses whose create call carries a model
