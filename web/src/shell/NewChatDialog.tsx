@@ -106,6 +106,7 @@ import { sessionRoutingHostId, setSessionHost } from "@/lib/sessionHost";
 import { readSubmitWithModEnter } from "@/lib/composerSendShortcutPreferences";
 import { ComposerAttachments } from "@/components/ComposerAttachments";
 import { recordOptimisticTitle } from "@/lib/optimisticTitles";
+import { CLIENT_CREATE_TOKEN_LABEL, newTempConversation } from "@/lib/tempConversationId";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Command,
@@ -313,7 +314,6 @@ import {
 } from "@/hooks/useConversations";
 import type { SessionListWireItem } from "@/lib/sessionListCache";
 import { nextPushedSession } from "@/lib/sessionUpdatesSocket";
-import { CLIENT_CREATE_TOKEN_LABEL, newTempConversation } from "@/lib/tempConversationId";
 import { FileMentionMenu } from "@/components/FileMentionMenu";
 import { FileDropOverlay } from "@/components/FileDropOverlay";
 import { useMentionBrowser } from "@/hooks/useMentionBrowser";
@@ -5803,8 +5803,12 @@ export function NewChatLandingScreen() {
           },
           body: createForm ?? createPayload,
         });
-        // Managed launch validation continues after the row is announced, so
-        // only its HTTP response can resolve the temp chat.
+        // The create doesn't answer until the host has spawned a runner — a
+        // process boot, seconds of it — but the session row exists (and is
+        // announced on the updates stream) almost immediately. Open the chat
+        // on whichever id lands first: the pushed row typically wins by
+        // seconds, and the chat page renders from the id alone, showing its
+        // own starting spinner while the runner comes up.
         const abortPush = new AbortController();
         const pushedRow = sandboxSelected
           ? Promise.resolve(null)
@@ -5845,7 +5849,6 @@ export function NewChatLandingScreen() {
           });
           confirmed.then(resolve, reject);
         });
-        abortPush.abort();
         // A row is only written (and announced) after the create has validated
         // the workspace and agent, so winning on the push can't skip past an
         // error the user needed to see on this screen.
@@ -5936,7 +5939,8 @@ export function NewChatLandingScreen() {
       if (selectedNativeHarness !== null) addRecentHarness(selectedNativeHarness);
       // SDK invocations resolve on the runner after create; native CLIs receive plain text.
       // Scope the recall entry to the new session id so ArrowUp surfaces it in
-      // the freshly-opened chat. Sanitized text so recall reproduces what was sent.
+      // the freshly-opened chat (whose composer reads the same per-conversation
+      // key). Sanitized text so recall reproduces exactly what was sent.
       appendPromptHistoryEntry(initialPrompt, data.id);
       // The session was created — drop any draft a detour back to this
       // screen stashed, so the next visit starts clean.

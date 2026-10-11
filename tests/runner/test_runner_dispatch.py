@@ -5201,6 +5201,108 @@ async def test_sys_session_send_by_id_names_child_from_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_sys_session_create_recovers_child_created_despite_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ``sys_session_create`` recovers a child the server created even when
+    the create POST fails client-side.
+
+    The runner's POST can time out while the server keeps processing and
+    commits the child row (and queues the initial message). Previously the
+    tool returned ``{"error": "sys_session_create failed: "}`` (an empty
+    ``asyncio.TimeoutError`` message) for a session that actually exists,
+    so orchestrators retried and spawned duplicate children. The recovery
+    lookup must return the real child's handle instead.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    monkeypatch.setattr(subagent_work, "register_child_session", lambda *a, **k: None)
+    create_posts = 0
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal create_posts
+        if request.method == "POST" and request.url.path == "/v1/sessions":
+            create_posts += 1
+            raise httpx.ReadTimeout("timed out", request=request)
+        if (
+            request.method == "GET"
+            and request.url.path == "/v1/sessions/conv_parent/child_sessions"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "conv_recovered",
+                            "title": "auth",
+                            "agent_id": "ag_x",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create",
+            arguments=json.dumps({"agent_id": "ag_x", "title": "auth", "message": "start"}),
+            server_client=server_client,
+            conversation_id="conv_parent",
+        )
+
+    handle = json.loads(output)
+    assert handle["conversation_id"] == "conv_recovered"
+    assert create_posts == 1
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_timeout_error_names_exception() -> None:
+    """
+    A create POST that genuinely fails reports the exception type, never
+    an empty message.
+
+    ``asyncio.TimeoutError`` stringifies to an empty string, so the old
+    ``f"sys_session_create failed: {exc}"`` produced an error with no
+    actionable detail and no hint that the child may still have been
+    created server-side.
+
+    :raises AssertionError: If the error message omits the exception type.
+    """
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/sessions":
+            raise httpx.ReadTimeout("timed out", request=request)
+        if (
+            request.method == "GET"
+            and request.url.path == "/v1/sessions/conv_parent/child_sessions"
+        ):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create",
+            arguments=json.dumps({"agent_id": "ag_x", "title": "auth"}),
+            server_client=server_client,
+            conversation_id="conv_parent",
+        )
+
+    info = json.loads(output)
+    assert "ReadTimeout" in info["error"]
+    assert info["error"].endswith("timed out")
+
+
+@pytest.mark.asyncio
 async def test_sys_session_send_completion_drains_from_parent_inbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
