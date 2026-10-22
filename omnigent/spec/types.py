@@ -1570,8 +1570,10 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
         ``SharePolicy.NONE``.**
     :param agent_session_control: Whether the agent may send normal input to
         and retry other permitted sessions, and post durable notifications to
-        its user's Inbox. This does not grant sub-agent ownership semantics.
-        YAML key is ``agent_session_control:``. **Defaults to ``False``.**
+        its user's Inbox. It also lets by-session-id ``sys_session_send``
+        reach a session outside the caller's subtree as ordinary input. This
+        does not grant sub-agent ownership semantics. YAML key is
+        ``agent_session_control:``. **Defaults to ``False``.**
     """
 
     spec_version: int

@@ -9784,6 +9784,159 @@ async def test_sys_session_send_session_id_rejects_non_child() -> None:
     assert event_posts == []
 
 
+@pytest.mark.asyncio
+async def test_sys_session_send_supervisor_delivers_to_non_child_as_normal_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session-control supervisor reaches a cross-tree target as ordinary input.
+
+    A scheduled Manager supervises a separately rooted Orchestrator session.
+    By-session-id send must deliver the message to that existing session — same
+    tree, same workers, no parent/child adoption — instead of failing with
+    ``session_out_of_tree``. No sub-agent bookkeeping may run and the target's
+    completion must not be routed into the supervisor's inbox.
+    """
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    def _unexpected_bookkeeping(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError(f"supervised send changed topology: {args!r} {kwargs!r}")
+
+    monkeypatch.setattr(subagent_work, "register_child_session", _unexpected_bookkeeping)
+    monkeypatch.setattr(subagent_work, "register_subagent_work", _unexpected_bookkeeping)
+
+    session_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    event_posts: list[dict[str, Any]] = []
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_orchestrator":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "conv_orchestrator",
+                    "parent_session_id": None,
+                    "root_conversation_id": "conv_orchestrator",
+                    "title": "Orchestrator",
+                    "labels": {},
+                },
+            )
+        if (
+            request.method == "POST"
+            and request.url.path == "/v1/sessions/conv_orchestrator/events"
+        ):
+            event_posts.append(json.loads(request.content))
+            return httpx.Response(202, json={"queued": True, "item_id": "item_1"})
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_send",
+            arguments=json.dumps(
+                {"session_id": "conv_orchestrator", "args": "Manager: resume work."}
+            ),
+            server_client=server_client,
+            conversation_id="conv_manager",
+            agent_spec=AgentSpec(spec_version=1, spawn=True, agent_session_control=True),
+            session_inbox=session_inbox,
+        )
+
+    assert event_posts == [
+        {
+            "type": "message",
+            "data": {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Manager: resume work."}],
+            },
+        }
+    ]
+    handle = json.loads(output)
+    assert handle["conversation_id"] == "conv_orchestrator"
+    assert handle["kind"] == "supervised_session"
+    assert handle["delivery"] == "normal_input"
+    assert handle["status"] == "queued"
+    assert session_inbox.empty()
+
+
+@pytest.mark.asyncio
+async def test_sys_session_send_supervisor_refuses_closed_target() -> None:
+    """The cross-tree branch cannot revive a tombstoned session."""
+    from omnigent.runner.tool_dispatch import execute_tool
+    from omnigent.util.session_lifecycle import CLOSED_LABEL_KEY, CLOSED_LABEL_VALUE
+
+    event_posts: list[dict[str, Any]] = []
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_orchestrator":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "conv_orchestrator",
+                    "parent_session_id": None,
+                    "title": "Orchestrator",
+                    "labels": {CLOSED_LABEL_KEY: CLOSED_LABEL_VALUE},
+                },
+            )
+        if (
+            request.method == "POST"
+            and request.url.path == "/v1/sessions/conv_orchestrator/events"
+        ):
+            event_posts.append(json.loads(request.content))
+            return httpx.Response(202, json={"queued": True})
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_send",
+            arguments=json.dumps({"session_id": "conv_orchestrator", "args": "resume"}),
+            server_client=server_client,
+            conversation_id="conv_manager",
+            agent_spec=AgentSpec(spec_version=1, spawn=True, agent_session_control=True),
+            session_inbox=asyncio.Queue(),
+        )
+
+    assert json.loads(output)["error"] == "session_closed"
+    assert event_posts == []
+
+
+@pytest.mark.asyncio
+async def test_sys_session_send_supervisor_surfaces_server_denial() -> None:
+    """The grant does not override the server's own session-permission check."""
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_private":
+            return httpx.Response(
+                200,
+                json={"id": "conv_private", "parent_session_id": None, "labels": {}},
+            )
+        if request.method == "POST" and request.url.path == "/v1/sessions/conv_private/events":
+            return httpx.Response(403, json={"error": "forbidden"})
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_send",
+            arguments=json.dumps({"session_id": "conv_private", "args": "resume"}),
+            server_client=server_client,
+            conversation_id="conv_manager",
+            agent_spec=AgentSpec(spec_version=1, spawn=True, agent_session_control=True),
+            session_inbox=asyncio.Queue(),
+        )
+
+    assert json.loads(output) == {
+        "error": "access_denied",
+        "session_id": "conv_private",
+    }
+
+
 @pytest.mark.parametrize("empty_output", ["", "   ", "\n\t "])
 def test_format_async_task_item_empty_subagent_completion_reads_as_no_output(
     empty_output: str,

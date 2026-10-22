@@ -2593,6 +2593,7 @@ async def _execute_subagent_tool(
             conversation_id=conversation_id,
             publish_event=publish_event,
             created_by=dispatch_created_by,
+            agent_spec=agent_spec,
         )
 
     # Named mode: (agent, title) spawn-or-continue.
@@ -3153,6 +3154,82 @@ async def _execute_subagent_tool(
     )
 
 
+async def _send_to_supervised_session(
+    target_session_id: str,
+    message: str,
+    *,
+    snap_data: _JsonObject,
+    server_client: httpx.AsyncClient,
+    conversation_id: str,
+    agent_spec: AgentSpec,
+) -> str:
+    """Deliver ordinary input to a permitted session outside the caller's tree.
+
+    The supervisor branch of by-session-id ``sys_session_send``: a caller whose
+    agent opts into ``agent_session_control`` may address any session the
+    server still lets it edit. The message lands as normal user input, so the
+    target keeps its own tree, its durable state, and its existing workers — no
+    parent/child mapping is registered and its completion is NOT routed into
+    the caller's inbox. The server's own session-permission check remains the
+    authority; a denied target surfaces as ``access_denied``.
+
+    :param target_session_id: The existing session to message.
+    :param message: The user message text to post.
+    :param snap_data: The target's session snapshot (parentage already checked).
+    :param server_client: HTTP client pointed at the Omnigent server.
+    :param conversation_id: The calling session's own id.
+    :param agent_spec: The caller's agent spec, which must hold the grant.
+    :returns: JSON delivery handle, or a JSON error object.
+    """
+    raw_labels = snap_data.get("labels")
+    labels = (
+        {
+            key: value
+            for key, value in raw_labels.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        if isinstance(raw_labels, dict)
+        else None
+    )
+    if is_session_closed(labels, _optional_string(snap_data.get("title"))):
+        return json.dumps(
+            {
+                "error": "session_closed",
+                "conversation_id": target_session_id,
+                "message": "target session is closed; create a new session to continue.",
+            }
+        )
+    output = await _execute_session_control_tool(
+        "sys_session_message",
+        {"session_id": target_session_id, "message": message},
+        server_client=server_client,
+        conversation_id=conversation_id,
+        agent_spec=agent_spec,
+    )
+    result = None
+    try:
+        result = _string_object_dict(json.loads(output))
+    except (ValueError, json.JSONDecodeError):
+        return output
+    if result is None or "error" in result:
+        return output
+    return json.dumps(
+        {
+            **result,
+            "conversation_id": target_session_id,
+            "handle_id": target_session_id,
+            "kind": "supervised_session",
+            "status": "queued",
+            "delivery": "normal_input",
+            "message": (
+                "Delivered ordinary input to an existing session outside your "
+                "subtree. It keeps its own tree and workers; its completion is "
+                "not routed to your inbox."
+            ),
+        }
+    )
+
+
 async def _send_to_existing_session(
     target_session_id: str,
     message: str,
@@ -3161,12 +3238,13 @@ async def _send_to_existing_session(
     conversation_id: str,
     publish_event: Callable[[str, _JsonObject], None] | None = None,
     created_by: str | None = None,
+    agent_spec: AgentSpec | None = None,
 ) -> str:
     """
-    Post a message to an existing direct-child session, return a handle.
+    Post a message to an existing session, return a handle.
 
-    The by-session-id mode of ``sys_session_send``. **Child-only**: the
-    target must be a direct child of the caller (its
+    The by-session-id mode of ``sys_session_send``. **Child-only by default**:
+    the target must be a direct child of the caller (its
     ``parent_session_id`` equals ``conversation_id``), so a caller can
     only drive sessions inside its own subtree — never a sibling or an
     unrelated session it merely has access to. Looks the target up to
@@ -3175,6 +3253,13 @@ async def _send_to_existing_session(
     fan-out and work mappings, posts the message, and returns a
     ``running`` handle immediately — the completion lands in the parent's
     ``sys_read_inbox`` queue, matching named-mode send.
+
+    A caller whose agent opts into ``agent_session_control`` is authorized to
+    supervise sessions outside its subtree: a non-child target the server
+    still lets it edit receives the message as ordinary user input, with no
+    parent/child mapping and no inbox routing (see
+    :func:`_send_to_supervised_session`). Everything else keeps the
+    ``session_out_of_tree`` refusal.
 
     The child's ``(agent, title)`` identity, carried by the handle, the
     launching tool result, and the completion wake notice, comes from
@@ -3187,7 +3272,10 @@ async def _send_to_existing_session(
     :param message: The user message text to post.
     :param server_client: HTTP client pointed at the Omnigent server.
     :param conversation_id: The caller's own session id — the required
-        parent of the target.
+        parent of the target, unless the caller's agent holds the
+        session-control grant.
+    :param agent_spec: The caller's agent spec; its
+        ``agent_session_control`` flag authorizes the cross-tree branch.
     :returns: JSON handle on success; a JSON/text error otherwise.
     """
     from omnigent.runner import subagent_work as _subagent_work
@@ -3204,6 +3292,15 @@ async def _send_to_existing_session(
         return f"Error: sys_session_send lookup returned {snap.status_code}"
     snap_data = snap.json()
     if snap_data.get("parent_session_id") != conversation_id:
+        if agent_spec is not None and getattr(agent_spec, "agent_session_control", False):
+            return await _send_to_supervised_session(
+                target_session_id,
+                message,
+                snap_data=snap_data,
+                server_client=server_client,
+                conversation_id=conversation_id,
+                agent_spec=agent_spec,
+            )
         return json.dumps(
             {
                 "error": "session_out_of_tree",

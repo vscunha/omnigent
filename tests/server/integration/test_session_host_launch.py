@@ -3725,6 +3725,91 @@ async def test_retry_session_relaunches_dead_runner_without_mutating_history(
     assert conv.runner_id != original_runner_id
 
 
+async def test_manager_retry_recovers_stopped_orchestrator_across_trees(
+    client: httpx.AsyncClient,
+    app: FastAPI,
+    db_uri: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scheduled Manager's session-control retry relaunches the SAME Orchestrator.
+
+    Drives the real runner dispatch (``sys_session_retry``) against the real
+    retry route: the Orchestrator's runner is gone, a separately rooted Manager
+    session is the caller, and recovery must relaunch that exact session — same
+    id, same durable tree with its existing child worker, unchanged history —
+    rather than creating a replacement.
+    """
+    from omnigent.runner.tool_dispatch import execute_tool
+    from omnigent.runtime import set_runner_client
+    from omnigent.server.routes import sessions as sessions_module
+    from omnigent.server.routes.sessions import routes_events
+    from omnigent.spec.types import AgentSpec
+
+    monkeypatch.setattr(sessions_module, "_HOST_BOUND_RUNNER_CONNECT_GRACE_S", 0.0)
+    comm = await _connect_host(app)
+    orchestrator = await _inline_launch_session(client, comm)
+    orchestrator_id = orchestrator["id"]
+    original_runner_id = orchestrator["runner_id"]
+    store = SqlAlchemyConversationStore(db_uri)
+    orchestrator_conv = store.get_conversation(orchestrator_id)
+    assert orchestrator_conv is not None
+    agent_id = orchestrator_conv.agent_id
+    assert agent_id is not None
+    worker = store.create_conversation(
+        kind="sub_agent",
+        title="worker:implementation",
+        parent_conversation_id=orchestrator_id,
+        agent_id=agent_id,
+        sub_agent_name="implementation",
+    )
+    manager_resp = await client.post(
+        "/v1/sessions", json={"agent_id": agent_id, "title": "Manager"}
+    )
+    assert manager_resp.status_code == 201, manager_resp.text
+    manager = manager_resp.json()
+    orchestrator_items = await client.get(f"/v1/sessions/{orchestrator_id}/items")
+
+    runner_client = object()
+    monkeypatch.setattr(
+        sessions_module, "_wait_for_runner_client", AsyncMock(return_value=runner_client)
+    )
+    monkeypatch.setattr(
+        routes_events, "_ensure_runner_session_initialized", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(routes_events, "_ensure_runner_relay_ready", AsyncMock(return_value=None))
+
+    set_runner_client(None)
+    responder = asyncio.create_task(_serve_one_launch(comm, launch_status="launched"))
+    try:
+        output = await execute_tool(
+            tool_name="sys_session_retry",
+            arguments=json.dumps({"session_id": orchestrator_id}),
+            server_client=client,
+            conversation_id=manager["id"],
+            agent_spec=AgentSpec(spec_version=1, agent_session_control=True),
+        )
+    finally:
+        await responder
+
+    result = json.loads(output)
+    assert result["session_id"] == orchestrator_id
+    assert result["recovered"] is True
+    assert result["recovery"] == "runner_relaunched"
+
+    recovered = store.get_conversation(orchestrator_id)
+    assert recovered is not None
+    assert recovered.runner_id != original_runner_id
+    assert recovered.parent_conversation_id is None
+    same_worker = store.get_conversation(worker.id)
+    assert same_worker is not None and same_worker.parent_conversation_id == orchestrator_id
+    after_items = await client.get(f"/v1/sessions/{orchestrator_id}/items")
+    assert after_items.json() == orchestrator_items.json()
+    manager_after = store.get_conversation(manager["id"])
+    assert manager_after is not None
+    assert manager_after.parent_conversation_id is None
+    assert manager_after.runner_id == manager.get("runner_id")
+
+
 async def test_retry_session_single_flight_launches_and_rotates_once(
     client: httpx.AsyncClient,
     app: FastAPI,

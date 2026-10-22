@@ -2067,6 +2067,44 @@ def create_runner_app(
                     _session_snapshot_cache[session_id] = snapshot
             return snapshot
 
+    # Session-scoped capability overlays (a scheduled task's explicit session
+    # control, for one) live on the conversation, not the agent bundle. Apply
+    # them on EVERY spec resolution: a turn that invalidates agent-derived
+    # caches after an agent-revision change resolves the raw bundle again, and
+    # without this the session silently loses its supervisor tools.
+    _raw_spec_resolver = spec_resolver
+
+    async def _spec_resolver_with_session_control(
+        agent_id: str, session_id: str | None = None
+    ) -> _SpecEntry | None:
+        """Resolve an agent bundle and re-apply the session's capability overlay.
+
+        Session init and the session-spec cache apply the scheduled
+        ``agent_session_control`` label, but both the first turn's
+        agent-revision cache reset and the direct-stream turn path resolve the
+        raw bundle through the resolver. Routing those reads through here keeps
+        a scheduled Manager's supervisor grant stable for the whole run.
+
+        :param agent_id: Bundled agent id to resolve, e.g. ``"ag_abc123"``.
+        :param session_id: Session whose persisted labels carry the overlay,
+            e.g. ``"conv_abc123"``; ``None`` skips the overlay.
+        :returns: The resolved spec entry with the overlay applied, or ``None``.
+        """
+        if _raw_spec_resolver is None:
+            return None
+        entry = await _raw_spec_resolver(agent_id, session_id)
+        if entry is None or session_id is None:
+            return entry
+        snapshot = await _session_snapshot(session_id)
+        if not snapshot.ok:
+            return entry
+        return _apply_scheduled_session_control(entry, snapshot.labels)
+
+    # Keep the caller's ``None`` contract: a runner built without a resolver
+    # must still report "no resolver" rather than a missing agent.
+    if _raw_spec_resolver is not None:
+        spec_resolver = _spec_resolver_with_session_control
+
     async def _session_workspace_value(session_id: str) -> str | None:
         if session_id not in _session_workspace_cache:
             generation = _session_cache_generation(session_id)
