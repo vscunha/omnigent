@@ -4442,7 +4442,7 @@ describe("NewChatLandingScreen", () => {
       "gap-0.5",
       "rounded-lg",
       "bg-transparent",
-      "w-11",
+      "min-w-11",
       "pl-1",
       "pr-2",
       "md:h-7",
@@ -4509,7 +4509,7 @@ describe("NewChatLandingScreen", () => {
     expect(leftControls).not.toHaveClass("overflow-hidden", "shrink-0", "absolute");
     expect(rightControls).toHaveClass("flex", "shrink", "items-center", "gap-1");
     expect(rightControls).toHaveClass("ml-auto", "max-w-full");
-    expect(rightControls).not.toHaveClass("flex-1");
+    expect(rightControls).not.toHaveClass("flex-1", "shrink-0");
     for (const control of [attach, hostChip, permission]) {
       expect(leftControls).toContainElement(control);
     }
@@ -7363,7 +7363,7 @@ describe("NewChatLandingScreen", () => {
     expect(screen.getByTestId("new-chat-landing-host-chip")).toHaveClass(
       "h-8",
       "gap-0.5",
-      "w-11",
+      "min-w-11",
       "pl-1",
       "pr-2",
       "bg-transparent",

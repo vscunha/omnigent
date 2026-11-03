@@ -274,6 +274,7 @@ from omnigent.server.routes._sessions.helpers import (
     _blocked_on_for,
     _build_new_item,
     _build_policy_engine_from_spec,
+    _child_llm_model_from_conversation,
     _child_session_summary_from_conversation,
     _codex_subagent_labels_from_body,
     _coerce_cumulative_field,
@@ -13068,6 +13069,8 @@ async def _child_session_summaries_from_conversations(
     conv_store: ConversationStore,
     *,
     parent_ids: Mapping[str, str] | None = None,
+    parent_reasoning_effort: str | None = None,
+    parent_model: str | None = None,
 ) -> list[ChildSessionSummary]:
     """
     Build child summaries with one batched message-preview lookup.
@@ -13086,6 +13089,10 @@ async def _child_session_summaries_from_conversations(
     :param parent_ids: Parent id per child id, for children of different
         parents (a whole subtree); a child missing from it gets
         *parent_session_id*.
+    :param parent_reasoning_effort: Parent's persisted effort, used as a
+        display fallback for older native child rows.
+    :param parent_model: Parent's effective model, used as a display fallback
+        for older child rows whose native wrapper/spec exposes no model.
     :returns: One :class:`ChildSessionSummary` per input child, preserving
         input order.
     """
@@ -13106,6 +13113,8 @@ async def _child_session_summaries_from_conversations(
             child,
             (parent_ids or {}).get(child.id, parent_session_id),
             previews.get(child.id),
+            parent_reasoning_effort=parent_reasoning_effort,
+            parent_model=parent_model,
         )
         for child in children
     ]
@@ -14332,6 +14341,17 @@ async def _get_session_snapshot(
     # from this).
     if reported_model := concrete_reported_model(conv.reported_model):
         llm_model = reported_model
+    # Native sub-agents run the parent's model but never report one of their
+    # own, so the composer had no model to name. Fall back to the parent the
+    # child actually inherits from; the rail uses the same rule.
+    if llm_model is None and conv.parent_conversation_id is not None:
+        parent = await asyncio.to_thread(conv_store.get_conversation, conv.parent_conversation_id)
+        if parent is not None:
+            llm_model = (
+                concrete_reported_model(parent.reported_model)
+                or parent.model_override
+                or _child_llm_model_from_conversation(parent)
+            )
     # Codex model options are also runner-owned: they come from the
     # session's live Codex app-server ``model/list`` response. Best-effort
     # and cache-backed so a snapshot poll cannot wedge the

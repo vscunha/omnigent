@@ -87,6 +87,8 @@ export function isSubagentRoutingSession(
 // The tier-defining token of Claude model ids ("databricks-claude-haiku-4-5" → "haiku").
 const MODEL_FAMILY_HINTS = ["haiku", "sonnet", "opus"] as const;
 
+export { formatModelDisplayName } from "@/lib/composerModelLabel";
+
 /**
  * Friendly short name for a model id, for the routing decision chip and the
  * SmartRoutingCard plan rows.
@@ -101,5 +103,11 @@ export function shortModelName(model: string): string {
   for (const family of MODEL_FAMILY_HINTS) {
     if (lower.includes(family)) return family;
   }
-  return lower.startsWith("databricks-") ? model.slice("databricks-".length) : model;
+  if (lower.startsWith("databricks-")) {
+    return model.slice("databricks-".length);
+  }
+  // Provider-prefixed ids like "opencode-go/deepseek-v4-flash" collapse to
+  // the model segment after the last "/", mirroring the databricks- strip.
+  const slash = model.lastIndexOf("/");
+  return slash >= 0 ? model.slice(slash + 1) : model;
 }

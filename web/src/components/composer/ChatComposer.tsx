@@ -505,6 +505,9 @@ export const ComposerActionGroup = forwardRef<
       data-composer-action-group={side}
       className={cn(
         "flex min-w-0 items-center gap-1 mobile-app:max-w-full",
+        // The leading controls keep their natural width; the trailing group
+        // absorbs the squeeze so its model label truncates instead of painting
+        // over the host and harness icons beside it.
         side === "left"
           ? "flex-none overflow-visible mobile-app:flex-wrap mobile-app:shrink"
           : "ml-auto max-w-full shrink",

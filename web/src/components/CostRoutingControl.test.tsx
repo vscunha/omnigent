@@ -121,6 +121,11 @@ describe("shortModelName", () => {
     expect(shortModelName("databricks-gpt-5-4-mini")).toBe("gpt-5-4-mini");
   });
 
+  it("collapses provider-prefixed ids to the model segment", () => {
+    expect(shortModelName("opencode-go/deepseek-v4-flash")).toBe("deepseek-v4-flash");
+    expect(shortModelName("openai-codex/gpt-5.6-luna")).toBe("gpt-5.6-luna");
+  });
+
   it("passes unrecognized ids through unchanged (fallback to the id)", () => {
     expect(shortModelName("gpt-5.4")).toBe("gpt-5.4");
   });

@@ -4010,6 +4010,8 @@ def register_events_routes(
                     page.data,
                     session_id,
                     conversation_store,
+                    parent_reasoning_effort=conv.reasoning_effort,
+                    parent_model=conv.reported_model or conv.model_override,
                 )
                 for summary in summaries:
                     events.append(
