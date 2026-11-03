@@ -36,7 +36,12 @@ describe("shared composer controls", () => {
       "md:gap-2",
     );
     expect(screen.getByTestId("workspace-bar")).not.toHaveClass("items-start", "pt-1.5");
-    expect(screen.getByRole("button", { name: "This machine" })).toHaveClass("w-11", "md:h-7");
+    // A minimum, so the status dot and icon can never overflow the button.
+    expect(screen.getByRole("button", { name: "This machine" })).toHaveClass(
+      "min-w-11",
+      "shrink-0",
+      "md:h-7",
+    );
   });
 
   it.each([
@@ -98,9 +103,48 @@ describe("shared composer controls", () => {
     );
     expect(screen.getByTestId("composer-agent-effort-value")).not.toHaveClass("hidden");
     expect(screen.getByTestId("product-icon")).toBeInTheDocument();
-    expect(screen.getByTestId("composer-agent-config-value")).toHaveClass(
+    expect(screen.getByTestId("composer-agent-config-value")).not.toHaveClass(
       COMPOSER_COLLAPSED_LABEL_CLASS,
     );
+  });
+
+  it("keeps a long model name's head and clips its end", () => {
+    render(
+      <ComposerHarnessTrigger
+        label="Antigravity configuration"
+        model="Gemini 3.8 Flash (Antigravity)"
+        effort="High"
+        icon={<span data-testid="product-icon" />}
+      />,
+    );
+    const value = screen.getByTestId("composer-agent-model-value");
+    expect(value).toHaveTextContent("Gemini 3.8 Flash (Antigravity)");
+    expect(value).toHaveAttribute("title", "Gemini 3.8 Flash (Antigravity)");
+    // End-ellipsis via CSS, and inset from the product icon beside it.
+    expect(value).toHaveClass("truncate");
+    expect(value).toHaveClass("ml-1");
+  });
+
+  it("keeps a long model and effort readout visible when the action row collapses", () => {
+    render(
+      <ComposerHarnessTrigger
+        label="Pi configuration"
+        model="deepseek-v4.1-flash"
+        effort="Max"
+        icon={<span data-testid="product-icon" />}
+      />,
+    );
+    expect(screen.getByTestId("composer-agent-config-value")).not.toHaveClass(
+      COMPOSER_COLLAPSED_LABEL_CLASS,
+    );
+    // Clip instead of painting over the send/mic controls beside the trigger.
+    expect(screen.getByTestId("composer-agent-config-value")).toHaveClass("overflow-hidden");
+    expect(screen.getByRole("button", { name: "Pi configuration" })).toHaveClass("overflow-hidden");
+    expect(screen.getByTestId("composer-agent-model-value")).toHaveAttribute(
+      "title",
+      "deepseek-v4.1-flash",
+    );
+    expect(screen.getByTestId("composer-agent-effort-value")).toHaveTextContent("Max");
   });
 
   it("keeps an icon-less model label visible when the action row collapses", () => {

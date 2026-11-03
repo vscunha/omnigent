@@ -2690,7 +2690,7 @@ describe("Composer shared visible controls", () => {
     );
     // A normal working directory has no empty worktree affordance.
     expect(within(workspace).queryByTestId("composer-git-branch")).toBeNull();
-    expect(screen.getByTestId("composer-host-select")).toHaveClass("w-11", "md:h-7");
+    expect(screen.getByTestId("composer-host-select")).toHaveClass("min-w-11", "md:h-7");
     expect(screen.getByTestId("composer-permission-chip")).toHaveTextContent("Ask for approval");
     const trigger = screen.getByTestId("composer-config-gear");
     expect(trigger.querySelector("img")).toBeTruthy();

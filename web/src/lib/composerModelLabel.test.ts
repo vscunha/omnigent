@@ -6,6 +6,7 @@ import {
   defaultModelLabel,
   formatModelEffortStatusLabel,
   formatStatusEffortLabel,
+  displayModelId,
   formatStatusModelLabel,
   nativeModelLabel,
   nativeModelTooltip,
@@ -25,10 +26,18 @@ describe("catalog model labels", () => {
     expect(compactModelTriggerLabel(defaultModelLabel([row]))).toBe(
       displayName.replace(" (1M context)", " 1M"),
     );
-    expect(formatStatusModelLabel(model)).toBe(model);
+    expect(formatStatusModelLabel(model)).toBe(displayModelId(model));
     expect(formatStatusModelLabel(model, [row])).toBe(displayName);
     expect(formatStatusModelLabel(id, [row])).toBe(displayName);
     expect(row).toEqual({ id, model, displayName, isDefault: true });
+  });
+
+  it("names a model without its provider namespace", () => {
+    expect(displayModelId("openai-codex/gpt-6-luna")).toBe("gpt-6-luna");
+    expect(displayModelId("opencode-go/deepseek-v4.1-flash")).toBe("deepseek-v4.1-flash");
+    expect(displayModelId("databricks-gpt-5-4-mini")).toBe("gpt-5.4-mini");
+    expect(displayModelId("gpt-5.4")).toBe("gpt-5.4");
+    expect(formatStatusModelLabel("openai-codex/gpt-6-luna")).toBe("gpt-6-luna");
   });
 
   it("condenses context capacity in the composer button label", () => {
@@ -138,8 +147,9 @@ describe("catalog model labels", () => {
       "Opus 4.8 (1M context)",
     );
     expect(formatStatusModelLabel("SYSTEM.AI.CLAUDE-OPUS-4-8", rows.toReversed())).toBe("Opus 4.8");
+    // Unmatched ids still drop their provider namespace in the composer.
     expect(formatStatusModelLabel("provider-a/custom", [{ id: "provider-b/custom" }])).toBe(
-      "provider-a/custom",
+      "custom",
     );
   });
 

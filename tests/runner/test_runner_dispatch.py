@@ -3750,6 +3750,12 @@ def test_maybe_signal_changed_files_throttles_within_window() -> None:
     assert len(published) == 2
 
 
+def test_inbox_notification_is_runner_local() -> None:
+    from omnigent.runner.tool_dispatch import should_dispatch_locally
+
+    assert should_dispatch_locally("sys_inbox_notify") is True
+
+
 def test_subagent_read_tools_are_runner_local() -> None:
     """
     ``sys_session_list`` and ``sys_session_get_history`` dispatch locally in the runner.
@@ -8662,6 +8668,52 @@ async def test_sys_session_get_info_maps_error_statuses(
     info = json.loads(output)
     assert info["error"] == expected_error
     assert info["session_id"] == "conv_missing"
+
+
+@pytest.mark.asyncio
+async def test_inbox_notification_dispatch_fails_closed_without_opt_in() -> None:
+    from omnigent.runner.tool_dispatch import _execute_session_control_tool
+
+    async def reject_request(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"ungranted notification reached server: {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reject_request)) as client:
+        output = await _execute_session_control_tool(
+            "sys_inbox_notify",
+            {"title": "Attention", "body": "Reconnect", "severity": "info"},
+            server_client=client,
+            conversation_id="manager",
+            agent_spec=AgentSpec(spec_version=1),
+        )
+    assert json.loads(output) == {"error": "agent_session_control_not_enabled"}
+
+
+@pytest.mark.asyncio
+async def test_inbox_notification_dispatch_uses_calling_session_as_source() -> None:
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    captured: dict[str, Any] = {}
+
+    async def handle_request(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"source_session_id": "manager"})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handle_request), base_url="http://server"
+    ) as client:
+        output = await execute_tool(
+            tool_name="sys_inbox_notify",
+            arguments=json.dumps({"title": "Attention", "body": "Reconnect", "severity": "info"}),
+            server_client=client,
+            conversation_id="manager",
+            agent_spec=AgentSpec(spec_version=1, agent_session_control=True),
+        )
+    assert captured == {
+        "path": "/v1/sessions/manager/inbox-notifications",
+        "body": {"title": "Attention", "body": "Reconnect", "severity": "info"},
+    }
+    assert json.loads(output)["source_session_id"] == "manager"
 
 
 @pytest.mark.asyncio
@@ -13580,3 +13632,23 @@ async def test_eager_mcp_cache_keeps_named_child_scope_after_revision_change(mon
             assert response.status_code == 200, response.text
             assert "Worker instructions." in recording.posted_bodies[-1]["instructions"]
             assert "Root instructions." not in recording.posted_bodies[-1]["instructions"]
+
+
+def test_capability_labels_participate_in_the_spec_revision() -> None:
+    """A patched session capability must reset a live runner's cached spec.
+
+    The runner only re-resolves a session's spec when the stamped revision
+    changes, so an Inbox opt-in/opt-out that stayed out of the revision would
+    leave the previous capability in place for the life of the session.
+    """
+    from omnigent._session_labels import SCHEDULED_AGENT_SESSION_CONTROL_LABEL
+    from omnigent.mcp_selection import mcp_selection_revision
+
+    enabled = mcp_selection_revision("ag_source", {SCHEDULED_AGENT_SESSION_CONTROL_LABEL: "true"})
+    disabled = mcp_selection_revision(
+        "ag_source", {SCHEDULED_AGENT_SESSION_CONTROL_LABEL: "false"}
+    )
+
+    assert enabled != disabled
+    assert enabled != "ag_source"
+    assert mcp_selection_revision("ag_source", {}) == "ag_source"

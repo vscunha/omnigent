@@ -421,6 +421,16 @@ describe("ChatComposer label collapse", () => {
     return { row, layout, rerender: (next: typeof actions) => view.rerender(composer(next)) };
   }
 
+  it("keeps the leading controls at full width and squeezes the trailing group", () => {
+    renderMeasuredComposer({
+      leading: <span>Bypass permissions</span>,
+      trailing: <span>Fable 5.1 xHigh</span>,
+    });
+    expect(screen.getByTestId("leading")).toHaveClass("flex-none");
+    expect(screen.getByTestId("trailing")).toHaveClass("shrink");
+    expect(screen.getByTestId("trailing")).not.toHaveClass("shrink-0");
+  });
+
   it("collapses the labels to icons once both groups stop fitting on one line with a gap", () => {
     const { row, layout } = renderMeasuredComposer({
       leading: <span>Bypass permissions</span>,

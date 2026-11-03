@@ -431,7 +431,10 @@ export const ComposerActionGroup = forwardRef<
       ref={ref}
       className={cn(
         "flex min-w-0 items-center gap-1",
-        side === "left" ? "flex-none overflow-visible" : "ml-auto max-w-full shrink-0",
+        // The leading controls keep their natural width; the trailing group
+        // absorbs the squeeze so its model label truncates instead of painting
+        // over the host and harness icons beside it.
+        side === "left" ? "flex-none overflow-visible" : "ml-auto max-w-full shrink",
         className,
       )}
       {...props}

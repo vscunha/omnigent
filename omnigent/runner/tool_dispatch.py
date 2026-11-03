@@ -323,6 +323,9 @@ _SESSION_QUERY_TOOLS = frozenset(
     }
 )
 
+# Direct calls must honor the same opt-in as tool advertisement.
+_SESSION_CONTROL_TOOLS = frozenset({"sys_inbox_notify"})
+
 _SESSION_SELF_WRITE_TOOLS = frozenset({SysSessionRenameTool.name()})
 _UI_TOOLS = frozenset({UiOpenFileTool.name()})
 
@@ -483,6 +486,7 @@ _NATIVE_RELAY_BUILTIN_TOOLS = (
     {SysSessionMessageTool.name()}
     | _COMMENT_TOOLS
     | _SESSION_QUERY_TOOLS
+    | _SESSION_CONTROL_TOOLS
     | _SESSION_SELF_WRITE_TOOLS
     | _UI_TOOLS
     | _ASYNC_INBOX_TOOLS
@@ -889,6 +893,7 @@ _ALL_LOCAL_TOOLS = (
     | _ADVISE_MODELS_TOOLS
     | _SESSION_CREATE_TOOLS
     | _SESSION_QUERY_TOOLS
+    | _SESSION_CONTROL_TOOLS
     | _SESSION_SELF_WRITE_TOOLS
     | _UI_TOOLS
     | _WEB_FETCH_TOOLS
@@ -4786,6 +4791,7 @@ _SCHEDULED_TASK_CREATE_FIELDS = (
     "permission_mode",
     "session_mode",
     "session_id",
+    "agent_session_control",
     "workspace",
     "host_id",
     "execution_target",
@@ -4804,6 +4810,7 @@ _SCHEDULED_TASK_UPDATE_FIELDS = (
     "max_cost_usd",
     "session_mode",
     "session_id",
+    "agent_session_control",
     "workspace",
     "host_id",
     "execution_target",
@@ -6883,6 +6890,62 @@ async def _fetch_peek_meta(
     return _PeekMeta(agent=parsed.agent, title=parsed.title, pending_elicitations=pending)
 
 
+async def _execute_session_control_tool(
+    tool_name: str,
+    args: _JsonObject,
+    *,
+    server_client: httpx.AsyncClient | None,
+    conversation_id: str | None,
+    agent_spec: AgentSpec | None,
+) -> str:
+    """Proxy Inbox notifications through the existing authenticated API."""
+    if agent_spec is None or not agent_spec.agent_session_control:
+        return json.dumps({"error": "agent_session_control_not_enabled"})
+    if server_client is None:
+        return json.dumps({"error": f"{tool_name} requires server access"})
+    if tool_name not in _SESSION_CONTROL_TOOLS:
+        return json.dumps({"error": f"unsupported session-control tool: {tool_name}"})
+
+    if not isinstance(conversation_id, str) or not conversation_id:
+        return json.dumps({"error": "sys_inbox_notify requires a calling session"})
+    title = args.get("title")
+    body = args.get("body")
+    severity = args.get("severity")
+    if not isinstance(title, str) or not title.strip():
+        return json.dumps({"error": "sys_inbox_notify requires a non-empty title"})
+    if not isinstance(body, str) or not body.strip():
+        return json.dumps({"error": "sys_inbox_notify requires a non-empty body"})
+    if severity not in ("info", "attention", "critical"):
+        return json.dumps({"error": "severity must be info, attention, or critical"})
+    try:
+        path = f"{_session_url(conversation_id)}/inbox-notifications"
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    payload = {"title": title, "body": body, "severity": severity}
+    try:
+        response = await server_client.post(path, json=payload, timeout=30.0)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"{tool_name} failed: {exc}"})
+    if response.status_code == 404:
+        return json.dumps({"error": "session_not_found", "session_id": conversation_id})
+    if response.status_code in (401, 403):
+        return json.dumps({"error": "access_denied", "session_id": conversation_id})
+    if response.status_code >= 400:
+        return json.dumps(
+            {
+                "error": f"{tool_name} returned {response.status_code}",
+                "detail": response.text[:200],
+            }
+        )
+    try:
+        result = _string_object_dict(response.json())
+    except (ValueError, json.JSONDecodeError):
+        result = None
+    if result is None:
+        return json.dumps({"error": f"{tool_name} returned an invalid response"})
+    return json.dumps(result)
+
+
 async def execute_tool(
     *,
     tool_name: str,
@@ -7072,6 +7135,14 @@ async def execute_tool(
                 arguments,
                 conversation_id=conversation_id,
                 server_client=server_client,
+                agent_spec=agent_spec,
+            )
+        elif tool_name in _SESSION_CONTROL_TOOLS:
+            output = await _execute_session_control_tool(
+                tool_name,
+                args,
+                server_client=server_client,
+                conversation_id=conversation_id,
                 agent_spec=agent_spec,
             )
         elif tool_name in _WEB_FETCH_TOOLS:

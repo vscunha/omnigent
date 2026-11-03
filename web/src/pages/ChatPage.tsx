@@ -188,6 +188,7 @@ import {
   computeIsTurnActive,
   computeIsWorking,
 } from "@/components/chat/chatBubbleParts";
+import { useChildSessions } from "@/hooks/useChildSessions";
 import { useSession } from "@/hooks/useSession";
 import { useOpenGithubTab } from "@/shell/FileViewerContext";
 import { useSessionHostOnline, useSessionRunnerOnline } from "@/hooks/RunnerHealthProvider";
@@ -4853,6 +4854,14 @@ function SessionHarnessPicker({
   const pendingModelChange = useChatStore((state) => state.pendingModelChange);
   const sessionModelSeeded = useChatStore((state) => state.sessionModelSeeded);
   const selectedEffort = useSessionEffort();
+  // A sub-agent chat can lack the parent's model/effort on its own snapshot
+  // while the parent's Agents rail already resolves both for this row, so read
+  // the same summary the rail renders instead of showing only the harness name.
+  const { session: composerSession } = useSession(conversationId);
+  const { children: railSiblings } = useChildSessions(composerSession?.parentSessionId ?? null);
+  const railSelf = railSiblings.find((row) => row.id === conversationId) ?? null;
+  const childModelFallback = railSelf?.model_override ?? railSelf?.llm_model ?? null;
+  const childEffortFallback = railSelf?.reasoning_effort ?? null;
   const costControlModeOverride = useChatStore((state) => state.costControlModeOverride);
   const routingOn = costRoutingEligible && costControlModeOverride === "on";
   const {
@@ -4893,13 +4902,22 @@ function SessionHarnessPicker({
     showModels,
     showEffort,
   });
-  const effortLabel = showEffort && !routingOn ? formatStatusEffortLabel(selectedEffort) : null;
+  const effortLabel =
+    (showEffort || childEffortFallback !== null) && !routingOn
+      ? formatStatusEffortLabel(selectedEffort ?? childEffortFallback)
+      : null;
   const label = routingOn
     ? SMART_ROUTING_LABEL
     : modelLabelLoading
       ? ""
       : compactModelTriggerLabel(
-          modelSummary ?? nativeAgent?.displayName ?? harnessLabel ?? "Session",
+          modelSummary ??
+            (childModelFallback
+              ? formatStatusModelLabel(childModelFallback, modelLabelOptions)
+              : null) ??
+            nativeAgent?.displayName ??
+            harnessLabel ??
+            "Session",
         );
   const availableEfforts =
     modelPickerKind === "codex"

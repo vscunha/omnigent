@@ -51,6 +51,21 @@ export function defaultModelLabel(options: readonly NativeModelLabelFields[]): s
   return defaultOption ? `Default (${nativeModelLabel(defaultOption)})` : "Default";
 }
 
+/** Convert router-style dashed GPT versions to the Codex/UI spelling. */
+export function formatModelDisplayName(model: string): string {
+  return model.replace(/(^|[-/])(gpt)-(\d+)-(\d+)(?=-|$)/gi, "$1$2-$3.$4");
+}
+
+/**
+ * Model id as the composer should name it: no provider namespace, no
+ * ``databricks-`` prefix, and GPT versions in their dotted spelling
+ * (``openai-codex/gpt-6-luna`` -> ``gpt-6-luna``).
+ */
+export function displayModelId(model: string): string {
+  const bare = model.slice(model.lastIndexOf("/") + 1).replace(/^databricks-/, "");
+  return formatModelDisplayName(bare);
+}
+
 export function compactModelTriggerLabel(value: string): string {
   const withoutDefault = /^Default \((.*)\)$/.exec(value)?.[1] ?? value;
   return withoutDefault.replace(/\s*\((\d+(?:\.\d+)?[KMG]) context\)/gi, " $1");
@@ -87,7 +102,7 @@ export function formatStatusModelLabel(
     if (descriptor) return fusionModelLabel(descriptor, raw);
   }
   const option = findModelLabelOption(codexModelOptions, raw);
-  return option ? nativeModelLabel(option) : raw;
+  return option ? nativeModelLabel(option) : displayModelId(raw);
 }
 
 /** Normalize a reasoning-effort value to its display label — the single place

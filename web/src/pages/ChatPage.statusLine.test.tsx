@@ -478,11 +478,10 @@ describe("formatModelEffortStatusLabel", () => {
     ).toBe("codex says GPT-5.5 xHigh");
   });
 
-  it("leaves unknown model ids raw", () => {
+  it("keeps an unknown model id without its provider prefix", () => {
     expect(formatModelEffortStatusLabel("gpt-5.5", "xhigh")).toBe("gpt-5.5 xHigh");
-    expect(formatModelEffortStatusLabel("databricks-gpt-5-5", "xhigh")).toBe(
-      "databricks-gpt-5-5 xHigh",
-    );
+    expect(formatModelEffortStatusLabel("databricks-gpt-5-5", "xhigh")).toBe("gpt-5.5 xHigh");
+    expect(formatModelEffortStatusLabel("openai-codex/gpt-6-luna", "max")).toBe("gpt-6-luna Max");
   });
 
   it("resolves an exact Claude alias to its catalog display name", () => {
