@@ -114,6 +114,7 @@ from omnigent.inner.terminal_lifecycle import (
     TERMINAL_LAUNCH_SESSION_ID_ENV,
 )
 from omnigent.native import native_bridge_common, policy_allow_cache
+from omnigent.process_logging import data_dir
 from omnigent.tools.base import Tool, ToolContext
 from omnigent.util.reasoning_effort import CLAUDE_EFFORTS
 
@@ -763,6 +764,29 @@ def _absolute_syntactic_path(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path.expanduser())))
 
 
+def _configured_data_parent(bridge_root: Path) -> Path | None:
+    """Validate the anchor for a bridge rooted in an explicitly configured data directory."""
+    if not os.environ.get("OMNIGENT_DATA_DIR"):
+        return None
+    configured = _absolute_syntactic_path(data_dir())
+    if bridge_root.parent != configured:
+        return None
+    parent = configured.parent
+    try:
+        info = parent.lstat()
+        canonical = parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError("configured data directory parent is unavailable") from exc
+    if canonical != parent or stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError("configured data directory parent must be a real directory")
+    if not IS_WINDOWS:
+        getuid = getattr(os, "getuid", None)
+        owner = getuid() if getuid is not None else None
+        if (owner is not None and info.st_uid not in (0, owner)) or info.st_mode & 0o022:
+            raise RuntimeError("configured data directory parent must be trusted and not writable")
+    return parent
+
+
 def _trusted_parent_for_bridge_dir(target: Path) -> Path:
     """
     Return the trusted parent for an allowed bridge directory.
@@ -787,6 +811,9 @@ def _trusted_parent_for_bridge_dir(target: Path) -> Path:
 
     codex_root = _absolute_syntactic_path(bridge_root())
     if target.is_relative_to(codex_root):
+        configured_parent = _configured_data_parent(codex_root)
+        if configured_parent is not None:
+            return configured_parent
         # In production, trust $HOME and validate/chmod the two bridge-owned
         # directories below it: .omnigent and codex-native. In tests, the
         # monkeypatched root may not use that shape, so trust the direct parent.
@@ -799,6 +826,9 @@ def _trusted_parent_for_bridge_dir(target: Path) -> Path:
 
     pi_root = _absolute_syntactic_path(pi_bridge_root())
     if target.is_relative_to(pi_root):
+        configured_parent = _configured_data_parent(pi_root)
+        if configured_parent is not None:
+            return configured_parent
         # Pi-native uses the same $HOME/.omnigent/<harness>-native layout as
         # Codex-native. Trust $HOME in production, while allowing tests to
         # monkeypatch the bridge root to a different shape.
@@ -831,6 +861,9 @@ def _trusted_parent_for_bridge_dir(target: Path) -> Path:
     # tests the monkeypatched root may differ, so trust the direct parent.
     antigravity_root = _absolute_syntactic_path(antigravity_bridge_root())
     if target.is_relative_to(antigravity_root):
+        configured_parent = _configured_data_parent(antigravity_root)
+        if configured_parent is not None:
+            return configured_parent
         trusted_parent = antigravity_root.parent
         if (
             antigravity_root.name == "antigravity-native"
@@ -865,6 +898,9 @@ def _trusted_parent_for_bridge_dir(target: Path) -> Path:
     # custom ``OMNIGENT_DATA_DIR`` or a test root, trust the direct parent.
     opencode_root = _absolute_syntactic_path(opencode_bridge_root())
     if target.is_relative_to(opencode_root):
+        configured_parent = _configured_data_parent(opencode_root)
+        if configured_parent is not None:
+            return configured_parent
         trusted_parent = opencode_root.parent
         if opencode_root.name == "opencode-native" and opencode_root.parent.name == ".omnigent":
             trusted_parent = opencode_root.parent.parent
@@ -2356,6 +2392,11 @@ def build_mcp_config(bridge_dir: Path, *, python_executable: str | None = None) 
                     # Keep it aligned with the runner when Claude inherits a
                     # different TMPDIR from the user's shell.
                     "TMPDIR": str(_TRUSTED_PARENT),
+                    **(
+                        {"OMNIGENT_DATA_DIR": str(data_dir())}
+                        if os.environ.get("OMNIGENT_DATA_DIR")
+                        else {}
+                    ),
                 },
             }
         }
