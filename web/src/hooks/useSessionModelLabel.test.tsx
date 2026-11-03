@@ -21,6 +21,8 @@ const scope: SessionModelLabelScope = {
   harness: "claude-native",
 };
 const model = "provider/model-a";
+// The label names the model without its provider namespace.
+const bareModel = "model-a";
 const catalog: NativeModelOption[] = [
   { id: "alias-a", model, displayName: "Team model (large context)" },
 ];
@@ -184,7 +186,7 @@ describe("useSessionModelLabel", () => {
     act(() => vi.advanceTimersByTime(SESSION_MODEL_LABEL_WAIT_MS));
     expect(result.current.unavailable).toBe(true);
     rerender({ ...defaults, hostOptions, options: [{ id: "another-model" }] });
-    expect(result.current).toEqual({ label: model, loading: false, unavailable: false });
+    expect(result.current).toEqual({ label: bareModel, loading: false, unavailable: false });
   });
 
   it("waits on a cold catalog, then renders and caches its exact display name", () => {
@@ -314,14 +316,16 @@ describe("useSessionModelLabel", () => {
   });
 
   it.each([
-    { options: [{ id: "alias-a", model }] },
-    { options: [{ id: "another-model", displayName: "Other model" }] },
+    // A catalog row without a name keeps its wire model; an unmatched id drops
+    // the provider namespace like the composer does.
+    { options: [{ id: "alias-a", model }], expected: model },
+    { options: [{ id: "another-model", displayName: "Other model" }], expected: bareModel },
   ])(
     "a settled catalog without a matching display name invalidates the cache: %j",
-    ({ options }) => {
+    ({ options, expected }) => {
       writeSessionModelLabelCache(cacheKey(), "Old advertised name");
       const { result, rerender } = renderLabel({ options });
-      expect(result.current).toEqual({ label: model, loading: false, unavailable: false });
+      expect(result.current).toEqual({ label: expected, loading: false, unavailable: false });
       expect(readSessionModelLabelCache(cacheKey())).toBeNull();
       rerender(defaults);
       expect(result.current).toEqual(loading);
@@ -384,7 +388,7 @@ describe("useSessionModelLabel", () => {
     const { result, rerender } = renderLabel({ model: null });
     expect(result.current).toEqual({ label: null, loading: false, unavailable: false });
     rerender({ ...defaults, expectsCatalog: false });
-    expect(result.current).toEqual({ label: model, loading: false, unavailable: false });
+    expect(result.current).toEqual({ label: bareModel, loading: false, unavailable: false });
     expect(vi.getTimerCount()).toBe(0);
   });
 

@@ -207,7 +207,9 @@ export const ComposerHostTrigger = forwardRef<
       type="button"
       aria-label={label}
       className={cn(
-        "flex h-8 mobile-touch-target w-11 shrink-0 cursor-pointer items-center justify-center gap-0.5 rounded-lg bg-transparent pl-1 pr-2 text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground dark:hover:bg-muted/50 disabled:cursor-default md:h-7",
+        // A floor, not a fixed width: the status dot and icon must never
+        // overflow the button and paint over the harness icon beside it.
+        "flex h-8 mobile-touch-target min-w-11 shrink-0 cursor-pointer items-center justify-center gap-0.5 rounded-lg bg-transparent pl-1 pr-2 text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground dark:hover:bg-muted/50 disabled:cursor-default md:h-7",
         appearance === "header" &&
           "max-md:data-[state=open]:bg-transparent max-md:focus:bg-transparent max-md:focus-visible:ring-0",
         className,
@@ -441,6 +443,9 @@ export const ComposerHarnessTrigger = forwardRef<
   ref,
 ) {
   const Trigger = appearance === "header" ? MobileHeaderButton : Button;
+  // A model or effort readout is the only place the composer names what will
+  // run, so it stays visible even when the action row collapses to icons.
+  const hasModelReadout = Boolean(model || effort);
   return (
     <Trigger
       {...(appearance === "header" ? { glass: false } : {})}
@@ -451,7 +456,7 @@ export const ComposerHarnessTrigger = forwardRef<
       aria-label={label}
       aria-busy={loading || undefined}
       className={cn(
-        "h-auto min-h-8 mobile-touch-target min-w-0 w-auto max-w-full shrink gap-1 rounded-lg border-0 px-2 py-0 text-ui leading-5 font-normal text-muted-foreground hover:text-foreground md:min-h-7",
+        "h-auto min-h-8 mobile-touch-target min-w-0 w-auto max-w-full shrink gap-1 overflow-hidden rounded-lg border-0 px-2 py-0 text-ui leading-5 font-normal text-muted-foreground hover:text-foreground md:min-h-7",
         className,
       )}
       {...props}
@@ -476,8 +481,8 @@ export const ComposerHarnessTrigger = forwardRef<
           when the row collapses. */}
       <span
         className={cn(
-          "inline-flex min-w-0 flex-nowrap items-baseline gap-1",
-          icon != null && COMPOSER_COLLAPSED_LABEL_CLASS,
+          "inline-flex min-w-0 overflow-hidden flex-nowrap items-baseline gap-1",
+          icon != null && !hasModelReadout && COMPOSER_COLLAPSED_LABEL_CLASS,
           labelClassName,
           appearance === "header" && "sr-only",
         )}
@@ -485,7 +490,7 @@ export const ComposerHarnessTrigger = forwardRef<
       >
         {model && (
           <span
-            className="min-w-0 truncate text-left text-ui leading-5 font-medium text-foreground"
+            className="ml-1 min-w-0 flex-1 truncate text-left text-ui leading-5 font-medium text-foreground"
             title={model}
             data-testid={`${testIdPrefix}-agent-model-value`}
           >
@@ -494,7 +499,7 @@ export const ComposerHarnessTrigger = forwardRef<
         )}
         {effort && (
           <span
-            className="shrink-0 text-ui leading-5 font-normal text-muted-foreground"
+            className="max-w-[6rem] shrink-0 truncate text-ui leading-5 font-normal text-muted-foreground"
             data-testid={`${testIdPrefix}-agent-effort-value`}
           >
             {effort}
