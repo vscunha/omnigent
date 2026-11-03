@@ -26,7 +26,7 @@ from omnigent.runner.github_resource import (
     github_info,
     github_pr_diff,
 )
-from omnigent.runner.session_prs import PullRequestRef
+from omnigent.runner.session_prs import PullRequestRef, SessionPrRegistry
 
 
 def _stub_gh(
@@ -371,6 +371,97 @@ def test_head_commit_shas_includes_head(repo: Path) -> None:
         ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout.strip()
     assert head in github_resource._head_commit_shas(str(repo))
+
+
+def test_selected_pr_loads_with_gh_versions_without_base_ref_oid(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Older GitHub CLI releases don't expose ``baseRefOid`` in ``pr view --json``."""
+    reference = PullRequestRef.from_url(
+        "https://github.com/vscunha/CryptoPlatformWorkspace/pull/345"
+    )
+    monkeypatch.setattr(
+        github_resource,
+        "_list_accounts",
+        lambda _root: (
+            True,
+            [{"login": "vscunha", "active": True, "state": "success", "host": "github.com"}],
+        ),
+    )
+    monkeypatch.setattr(github_resource.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(github_resource._config, "github_account_preference", lambda _key: None)
+
+    def fake_gh(
+        argv: Sequence[str], *, cwd: str, token: str | None = None
+    ) -> tuple[int, str, str]:
+        del cwd, token
+        if tuple(argv[:2]) == ("pr", "view"):
+            fields = argv[argv.index("--json") + 1]
+            if "baseRefOid" in fields:
+                return (1, "", 'Unknown JSON field: "baseRefOid"')
+            return (
+                0,
+                json.dumps(
+                    {
+                        "number": 345,
+                        "title": "A PR",
+                        "state": "MERGED",
+                        "url": reference.url,
+                        "author": {"login": "vscunha"},
+                        "headRefOid": "head-sha",
+                        "baseRefName": "main",
+                        "headRefName": "feature",
+                    }
+                ),
+                "",
+            )
+        return (1, "", "unexpected gh command")
+
+    monkeypatch.setattr(github_resource, "_gh", fake_gh)
+
+    info = github_resource._reference_info(str(repo), reference)
+
+    assert info["pr"]["number"] == 345
+    assert info["pr"]["head_sha"] == "head-sha"
+
+
+def test_github_info_preserves_auth_when_selected_pr_cannot_load(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed selected-PR query does not imply the GitHub CLI is unauthenticated."""
+    session_id = "selected-pr-unavailable"
+    pr_url = "https://github.com/example/repo/pull/42"
+    registry_root = tmp_path / "session-prs"
+    registry = SessionPrRegistry(session_id, root=registry_root)
+    registry.record(
+        [PullRequestRef.from_url(pr_url)],
+        relationship="attached",
+        source="user",
+        timestamp=1,
+    )
+    monkeypatch.setattr(
+        pr_resource,
+        "SessionPrRegistry",
+        lambda session: SessionPrRegistry(session, root=registry_root),
+    )
+    monkeypatch.setattr(
+        github_resource,
+        "_list_accounts",
+        lambda _root: (
+            True,
+            [{"login": "alice", "active": True, "state": "success", "host": "github.com"}],
+        ),
+    )
+    monkeypatch.setattr(github_resource, "_pr_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(github_resource.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(github_resource._config, "github_account_preference", lambda _key: None)
+
+    info = github_info(str(repo), session_id=session_id, pr_url=pr_url)
+
+    assert info["authenticated"] is True
+    assert info["repo"] == {"name_with_owner": "example/repo"}
+    assert info["selected_pr_url"] == pr_url
+    assert info["pr"] is None
 
 
 def test_github_info_enumerates_accounts_only_when_repo_unreachable(

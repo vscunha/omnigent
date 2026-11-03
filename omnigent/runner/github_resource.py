@@ -989,13 +989,16 @@ def _reference_info(root: str, reference: PullRequestRef) -> dict[str, Any]:
     }
     if not info["gh_available"]:
         return info
-    _, accounts = _list_accounts(root)
+    authenticated, accounts = _list_accounts(root)
+    info["authenticated"] = authenticated
     info["accounts"] = [a for a in accounts if a.get("host") == reference.host]
     preferred = _config.github_account_preference(_repo_argument(reference))
     info["selected_account"] = preferred or next(
         (a["login"] for a in info["accounts"] if a.get("active")), None
     )
-    data = _pr_json(root, reference, _PR_VIEW_FIELDS + ",headRefOid,baseRefOid")
+    # gh 2.23 (still shipped by some distro packages) supports headRefOid but
+    # not baseRefOid; requesting the unknown field makes the whole PR query fail.
+    data = _pr_json(root, reference, _PR_VIEW_FIELDS + ",headRefOid")
     if data is None:
         return info
     author = data.get("author")

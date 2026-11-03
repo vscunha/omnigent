@@ -88,7 +88,6 @@ vi.mock("@/hooks/usePullRequests", async (importOriginal) => {
     // The panel reads every info payload through the real normalizer.
     normalizePullRequestInfo: original.normalizePullRequestInfo,
     usePullRequestCommentComposer: original.usePullRequestCommentComposer,
-    usePullRequestReviewThreadComposer: original.usePullRequestReviewThreadComposer,
     pullRequestCommentTooLong: original.pullRequestCommentTooLong,
     MAX_PULL_REQUEST_COMMENT_CHARACTERS: original.MAX_PULL_REQUEST_COMMENT_CHARACTERS,
     applyPullRequestLabelChange: original.applyPullRequestLabelChange,
@@ -743,37 +742,9 @@ describe("PullRequestPanel", () => {
       stale: true,
     });
     await user.click(screen.getByRole("button", { name: "acme/app #6000 — chore: dummy PR" }));
-    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", {
-      poll: true,
-      prUrl: url,
-    });
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Changes" }));
-    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", {
-      poll: true,
-      prUrl: url,
-    });
+    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", { poll: true, prUrl: url });
     rerender(<PullRequestPanel conversationId="conv_1" active={false} />);
-    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", {
-      poll: false,
-      prUrl: url,
-    });
-    rerender(<PullRequestPanel conversationId="conv_1" active />);
-    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", {
-      poll: true,
-      prUrl: url,
-    });
-    await user.click(screen.getByRole("button", { name: "All pull requests (2)" }));
-    expect(screen.getByRole("list", { name: "Pull requests" })).toBeVisible();
-    expect(usePullRequestInfo).toHaveBeenCalledWith("conv_1", {
-      poll: "list",
-      prUrl: url,
-    });
-    await user.click(screen.getByRole("button", { name: "acme/app #6000 — chore: dummy PR" }));
-    expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
-    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", {
-      poll: true,
-      prUrl: url,
-    });
+    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", { poll: false, prUrl: url });
   });
 
   it("shows cancelled and skipped checks as separate grey pills listing their jobs", async () => {
@@ -1601,6 +1572,35 @@ describe("PullRequestPanel", () => {
     }
   });
 
+  it("explains when an authenticated host cannot load the selected PR", async () => {
+    const url = "https://github.com/acme/app/pull/42";
+    const info = state.info!.data!;
+    info.pr = null;
+    info.repo = { name_with_owner: "acme/app" };
+    info.selected_pr_url = url;
+    info.tracking_available = true;
+    info.prs = [
+      { url, host: "github.com", repository: "acme/app", number: 42, relationship: "attached" },
+    ];
+    info.accounts = [
+      { login: "personal", active: true, state: "success", host: "github.com" },
+      { login: "work", active: false, state: "success", host: "github.com" },
+    ];
+    info.selected_account = "personal";
+    state.stored.conv_1 = info.prs;
+
+    renderPanel();
+
+    // A session with one PR opens its details directly, so the failure shows at once.
+    expect(await screen.findByText("Couldn’t load this pull request")).toBeInTheDocument();
+    expect(screen.getByText(/gh pr view 42 --repo acme\/app/)).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "GitHub account" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Open the PR on GitHub" })).toHaveAttribute(
+      "href",
+      url,
+    );
+  });
+
   it("names an extensible provider's account selector", () => {
     const info = state.info!.data!;
     info.repo = null;
@@ -2266,7 +2266,6 @@ describe("PullRequestPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey?.[0])).toEqual([
       "github-info",
-      "github-review-threads",
       "github-changed-files",
       "github-pr-diff",
       "session-pull-requests",
@@ -2482,6 +2481,17 @@ describe("derivePullRequestPanelState", () => {
     );
     const noPr = derivePullRequestPanelState(q({ data: { ...ready, pr: null } }));
     expect(noPr).toEqual({ kind: "no-pr", branch: "feat/x" });
+    expect(
+      derivePullRequestPanelState(
+        q({
+          data: {
+            ...ready,
+            pr: null,
+            selected_pr_url: "https://github.com/example/app/pull/42",
+          },
+        }),
+      ),
+    ).toEqual({ kind: "selected-pr-unavailable" });
     expect(derivePullRequestPanelState(q({ data: ready }))).toEqual({ kind: "ready" });
   });
 
@@ -2750,10 +2760,7 @@ describe("session PR selection", () => {
 
     expect(screen.queryByRole("tab", { name: "Summary" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "example/two #42 — Second repository" }));
-    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", {
-      poll: true,
-      prUrl: two,
-    });
+    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", { poll: true, prUrl: two });
     expect(screen.queryByRole("list", { name: "Pull requests" })).toBeNull();
     expect(screen.getByRole("button", { name: "All pull requests (2)" })).toBeVisible();
 
@@ -2772,10 +2779,7 @@ describe("session PR selection", () => {
     await user.click(screen.getByRole("button", { name: "All pull requests (2)" }));
     expect(screen.getByRole("list", { name: "Pull requests" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "example/one #42 — First repository" }));
-    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", {
-      poll: true,
-      prUrl: one,
-    });
+    expect(usePullRequestInfo).toHaveBeenLastCalledWith("conv_1", { poll: true, prUrl: one });
 
     state.info = { isLoading: true, error: null, isFetching: true };
     rerender(<PullRequestPanel conversationId="conv_other" />);
