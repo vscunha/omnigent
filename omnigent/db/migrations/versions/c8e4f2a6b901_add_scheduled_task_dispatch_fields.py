@@ -16,6 +16,7 @@ from alembic import context, op
 from sqlalchemy.dialects.mysql import VARCHAR
 
 from omnigent.db.db_models import Uuid16
+from omnigent.db.migration_compat import migration_branch_is_applied, migration_column_exists
 
 revision: str = "c8e4f2a6b901"
 down_revision: str | None = "nf12ab34cd56"
@@ -29,6 +30,7 @@ _RUN_TIMESTAMPS = ("scheduled_at", "fired_at", "finished_at")
 
 def upgrade() -> None:
     """Widen timestamps and add dispatch fields, uniqueness, and scan indexes."""
+    has_project_id = migration_column_exists("scheduled_tasks", "project_id")
     with op.batch_alter_table("scheduled_tasks") as batch:
         for column in _TASK_TIMESTAMPS:
             batch.alter_column(
@@ -38,7 +40,8 @@ def upgrade() -> None:
                 existing_nullable=column != "created_at",
             )
         batch.add_column(sa.Column("next_run_at", sa.BigInteger(), nullable=True))
-        batch.add_column(sa.Column("project_id", Uuid16(), nullable=True))
+        if not has_project_id:
+            batch.add_column(sa.Column("project_id", Uuid16(), nullable=True))
         batch.add_column(sa.Column("delegation_ref", sa.String(1024), nullable=True))
         batch.create_index(
             "ix_scheduled_tasks_due", ["state", "next_run_at", "workspace_id", "id"]
@@ -125,10 +128,14 @@ def downgrade() -> None:
                     existing_nullable=column != "scheduled_at",
                 )
 
+    remove_project_id = not migration_branch_is_applied(
+        "e8a2b3c4d5e6"
+    ) and migration_column_exists("scheduled_tasks", "project_id")
     with op.batch_alter_table("scheduled_tasks") as batch:
         batch.drop_index("ix_scheduled_tasks_due")
         batch.drop_column("delegation_ref")
-        batch.drop_column("project_id")
+        if remove_project_id:
+            batch.drop_column("project_id")
         batch.drop_column("next_run_at")
         # CRDB cannot narrow indexed timestamps; keep their widened types.
         if op.get_bind().dialect.name != "cockroachdb":
