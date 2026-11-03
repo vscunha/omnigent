@@ -1626,6 +1626,10 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
         ``non-public`` (grant named users only), or ``public`` (also
         allow ``__public__`` link access). **Defaults to
         ``SharePolicy.NONE``.**
+    :param agent_session_control: Whether the agent may post durable
+        notifications to its user's Inbox. It grants no session-messaging
+        authority. YAML key is ``agent_session_control:``.
+        **Defaults to ``False``.**
     """
 
     spec_version: int
@@ -1682,6 +1686,7 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
     # has no search, which drops ``memory_search`` from the memory tools.
     memory_search_available: bool = True
     agent_session_sharing: SharePolicy = SharePolicy.NONE
+    agent_session_control: bool = False
     source_rel_dir: str | None = field(default=None, compare=False)
 
     @property
