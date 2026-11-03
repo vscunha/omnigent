@@ -38,6 +38,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -367,6 +368,7 @@ export function CreateScheduledTaskDialog({
   const [pickedPermission, setPickedPermission] = useState<string>("");
   // "Default" and untouched are both "", so track the user's choice separately.
   const [permissionPicked, setPermissionPicked] = useState(false);
+  const [agentSessionControl, setAgentSessionControl] = useState(false);
 
   const curation = pickerCuration(info);
   const curationPending = info === "loading" || isBootFallbackInfo(info);
@@ -655,6 +657,7 @@ export function CreateScheduledTaskDialog({
       setSystemPrompt(parts.systemPrompt);
       setTimezone(editingTask?.timezone ?? localTimezone());
       setCostLimit(editingTask?.maxCostUsd == null ? "" : String(editingTask.maxCostUsd));
+      setAgentSessionControl(editingTask?.agentSessionControl ?? false);
       if (editingTask) {
         const parsedSchedule = savedSchedule;
         setName(editingTask.name);
@@ -1656,6 +1659,7 @@ export function CreateScheduledTaskDialog({
     setPickedEffort("");
     setPickedPermission("");
     setPermissionPicked(false);
+    setAgentSessionControl(false);
     setSchedule(DEFAULT_SCHEDULE_MODEL);
     setHostId("");
     setWorkspace("");
@@ -1702,6 +1706,9 @@ export function CreateScheduledTaskDialog({
         prompt: systemPrompt === null ? effectivePrompt.trim() : effectivePrompt,
         rrule: buildRRule(schedule),
         timezone,
+        ...(agentSessionControl !== (editingTask?.agentSessionControl ?? false)
+          ? { agentSessionControl }
+          : {}),
         ...(maxCostUsd !== (editingTask?.maxCostUsd ?? null) ? { maxCostUsd } : {}),
         ...(executionTargetChanged ? { executionTarget } : {}),
         ...(worktreesSupported && baseBranch !== (editingTask?.baseBranch ?? null)
@@ -1889,6 +1896,20 @@ export function CreateScheduledTaskDialog({
               onSession={fromSession ? setSourceSnapshot : undefined}
             />
           )}
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-3">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="task-agent-session-control">Allow Inbox notifications</Label>
+              <p className="text-sm text-muted-foreground">
+                Lets this automation post notifications to your Inbox when it needs attention.
+              </p>
+            </div>
+            <Switch
+              id="task-agent-session-control"
+              checked={agentSessionControl}
+              onCheckedChange={setAgentSessionControl}
+            />
+          </div>
+
           <TooltipProvider skipDelayDuration={0}>
             <ScheduleFields
               timezone={timezone}

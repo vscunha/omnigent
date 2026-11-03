@@ -152,6 +152,7 @@ class CreateScheduledTaskRequest(BaseModel):
     prompt: str
     rrule: str
     agent_id: str
+    project_id: str | None = None
     timezone: str = "UTC"
     model_override: str | None = None
     reasoning_effort: str | None = None
@@ -160,6 +161,7 @@ class CreateScheduledTaskRequest(BaseModel):
     # MCP services every session the task creates starts with, as the
     # deployment's service names; validated against the owner's connections.
     mcp_services: list[str] = Field(default_factory=list, max_length=MAX_SESSION_MCP_SERVICES)
+    agent_session_control: bool = False
     max_cost_usd: float | None = Field(default=None, gt=0)
     # "continue" sends every run's prompt into one session: ``session_id`` when
     # given, else the session the first run creates. A prompt that runs a saved
@@ -174,8 +176,6 @@ class CreateScheduledTaskRequest(BaseModel):
     # ``managed_sandbox`` runs the task in a fresh server-provisioned sandbox
     # (no host_id, optional repository URL); default keeps connected-host behavior.
     execution_target: str = "connected_host"
-    # One of the caller's projects to file fired sessions into.
-    project_id: str | None = None
     # A session the caller owns. Create copies it, and every run starts a new
     # session from that copy; responses carry the copy's id here.
     source_session_id: str | None = Field(default=None, min_length=1)
@@ -219,12 +219,14 @@ class UpdateScheduledTaskRequest(BaseModel):
     # per-agent settings below do not survive the switch — see the PATCH
     # handler, which clears any the caller does not resend.
     agent_id: str | None = Field(default=None, min_length=1)
+    project_id: str | None = None
     timezone: str | None = None
     model_override: str | None = None
     reasoning_effort: str | None = None
     permission_mode: str | None = None
     # Replaces the task's MCP services; [] clears them.
     mcp_services: list[str] | None = Field(default=None, max_length=MAX_SESSION_MCP_SERVICES)
+    agent_session_control: bool = False
     max_cost_usd: float | None = Field(default=None, gt=0)  # null clears the cap
     session_mode: Literal["new", "continue"] | None = None
     # Null makes a continue-mode task's next run start a new session.
@@ -234,7 +236,6 @@ class UpdateScheduledTaskRequest(BaseModel):
     host_id: str | None = Field(default=None, min_length=1)
     execution_target: str | None = Field(default=None, min_length=1)
     state: str | None = None
-    project_id: str | None = None  # null unfiles future runs
 
     @model_validator(mode="after")
     def _validate_patch(self) -> UpdateScheduledTaskRequest:
@@ -315,6 +316,7 @@ def _to_response(
         "reasoning_effort": task.reasoning_effort,
         "permission_mode": task.permission_mode,
         "mcp_services": list(task.mcp_services),
+        "agent_session_control": task.agent_session_control,
         "max_cost_usd": task.max_cost_usd,
         "session_mode": task.session_mode,
         "session_id": task.session_id,
@@ -536,11 +538,11 @@ def create_scheduled_tasks_router(
     agent_store: AgentStore,
     conversation_store: ConversationStore,
     permission_store: PermissionStore | None = None,
+    project_store: ProjectStore | None = None,
     agent_cache: Any | None = None,
     auth_provider: AuthProvider | None = None,
     artifact_store: ArtifactStore | None = None,
     file_store: Any | None = None,
-    project_store: ProjectStore | None = None,
     automations: DeploymentGate = True,
     liveness_lookup: Callable[[list[str]], dict[str, SessionLiveness]] | None = None,
 ) -> APIRouter:
@@ -1283,6 +1285,7 @@ def create_scheduled_tasks_router(
                     reasoning_effort=reasoning_effort,
                     permission_mode=permission_mode,
                     mcp_services=mcp_services,
+                    agent_session_control=body.agent_session_control,
                     max_cost_usd=body.max_cost_usd,
                     session_mode=body.session_mode,
                     session_id=body.session_id,

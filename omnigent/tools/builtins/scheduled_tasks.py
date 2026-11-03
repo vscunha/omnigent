@@ -143,6 +143,12 @@ class SysScheduledTaskCreateTool(Tool):
                                 "connected to each one. Omit for none."
                             ),
                         },
+                        "agent_session_control": {
+                            "type": "boolean",
+                            "description": (
+                                "Allow each fired session to post user Inbox notifications."
+                            ),
+                        },
                         "max_cost_usd": {
                             "type": "number",
                             "description": (
@@ -336,6 +342,12 @@ class SysScheduledTaskUpdateTool(Tool):
                             "description": (
                                 "Replaces the MCP services every run starts with. "
                                 "An empty list clears them."
+                            ),
+                        },
+                        "agent_session_control": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether future runs may post user Inbox notifications."
                             ),
                         },
                         "max_cost_usd": {

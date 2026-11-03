@@ -33,6 +33,9 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from starlette.datastructures import Headers
 
+from omnigent._session_labels import (
+    SCHEDULED_AGENT_SESSION_CONTROL_LABEL,
+)
 from omnigent.db.account_authority import account_checks_scope
 from omnigent.db.db_models import current_workspace_id
 from omnigent.db.utils import generate_agent_id
@@ -71,7 +74,9 @@ from omnigent.stores.conversation_store import (
     CODEX_NATIVE_BYPASS_SANDBOX_LABEL_KEY,
     FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY,
     FORK_SOURCE_LABEL_KEY,
+    SCHEDULED_TASK_INITIAL_RUN_LABEL_KEY,
     SCHEDULED_TASK_ORIGIN_LABEL_KEY,
+    SCHEDULED_TASK_RUN_LABEL_KEY,
     SCHEDULED_TASK_SOURCE_LABEL_KEY,
     SessionActivity,
 )
@@ -341,6 +346,7 @@ class FakeConversationStore:
     def __init__(self, *, fail_create: bool = False) -> None:
         self.created: list[dict[str, Any]] = []
         self.updated: list[dict[str, Any]] = []
+        self.labels: list[tuple[str, dict[str, str]]] = []
         self.create_workspace_ids: list[int] = []
         self._seq = 0
         self.fail_create = fail_create
@@ -375,6 +381,7 @@ class FakeConversationStore:
 
     def set_labels(self, conversation_id: str, labels: dict[str, str]) -> None:
         self.label_writes[conversation_id] = dict(labels)
+        self.labels.append((conversation_id, dict(labels)))
 
     def swap_label(self, conversation_id: str, key: str, value: str) -> str | None:
         self.set_labels(conversation_id, {key: value})
@@ -580,6 +587,25 @@ class FakeHostRegistry:
         return None
 
 
+@dataclass
+class _FakeProject:
+    id: str
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+class FakeProjectConfigStore:
+    """Serves project rows by id; ``get`` mirrors the owner-scoped store lookup."""
+
+    def __init__(self, projects: dict[str, dict[str, Any]] | None = None) -> None:
+        self.projects = projects or {}
+
+    def get(self, project_id: str, *, user_id: str | None) -> _FakeProject | None:
+        config = self.projects.get(project_id)
+        if config is None:
+            return None
+        return _FakeProject(id=project_id, config=config)
+
+
 class FakePolicyStore:
     """Records policy create/delete calls and serves them back per session."""
 
@@ -675,10 +701,10 @@ def _deps(sched_store: FakeScheduledTaskStore, **overrides: Any) -> FireDeps:
         tunnel_registry=overrides.get("tunnel_registry"),
         file_store=overrides.get("file_store"),
         artifact_store=overrides.get("artifact_store"),
+        project_store=overrides.get("project_store"),
         sandbox_config=overrides.get("sandbox_config"),
         managed_launches=overrides.get("managed_launches"),
         startup_inputs=overrides.get("startup_inputs"),
-        project_store=overrides.get("project_store"),
         single_user_owner=overrides.get("single_user_owner", RESERVED_USER_LOCAL),
         app_state=overrides.get("app_state"),
     )
@@ -837,6 +863,8 @@ async def test_active_creates_session_grant_and_run(
         assert title == ("[automation job] nightly" if trigger else "nightly")
     else:
         assert re.fullmatch(r"nightly \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\)", title)
+    # The fired session starts with the task's session-control capability.
+    assert conv_store.created[0]["labels"][SCHEDULED_AGENT_SESSION_CONTROL_LABEL] == "false"
     # NULL owner resolved to "local" and granted LEVEL_OWNER.
     assert perm.ensured == [RESERVED_USER_LOCAL]
     assert perm.grants and perm.grants[0][0] == RESERVED_USER_LOCAL
@@ -1104,6 +1132,24 @@ async def test_a_task_saved_on_another_users_agent_moves_to_its_owners_copy(
 
 
 @pytest.mark.asyncio
+async def test_active_creates_session_in_selected_project() -> None:
+    conv_store = FakeConversationStore()
+    store = FakeScheduledTaskStore(rows={"task_1": _task(project_id="project_1")})
+    project_store = FakeProjectConfigStore({"project_1": {}})
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    on_fire = build_on_fire(
+        _deps(store, conversation_store=conv_store, project_store=project_store),
+        launch_dispatch=_launch,
+    )
+    await on_fire(0, "task_1")
+    await _drain()
+
+    assert conv_store.created[0]["project_id"] == "project_1"
+
+
 @pytest.mark.parametrize(
     ("checks_enabled", "owner_generation"), [(True, None), (False, "current")]
 )
@@ -1134,6 +1180,68 @@ async def test_existing_owner_is_granted_without_ensure_user(
 
 
 @pytest.mark.asyncio
+async def test_project_workspace_hint_applied_when_workspace_unset() -> None:
+    """An unpinned workspace falls back to the project's configured default."""
+    conv_store = FakeConversationStore()
+    store = FakeScheduledTaskStore(rows={"task_1": _task(project_id="project_1", workspace=None)})
+    project_store = FakeProjectConfigStore({"project_1": {"workspace": "/project/folder"}})
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    on_fire = build_on_fire(
+        _deps(store, conversation_store=conv_store, project_store=project_store),
+        launch_dispatch=_launch,
+    )
+    await on_fire(0, "task_1")
+    await _drain()
+
+    assert conv_store.created[0]["workspace"] == "/project/folder"
+
+
+@pytest.mark.asyncio
+async def test_pinned_workspace_wins_over_project_hint() -> None:
+    """A pinned ``task.workspace`` skips the project default fill."""
+    conv_store = FakeConversationStore()
+    store = FakeScheduledTaskStore(
+        rows={"task_1": _task(project_id="project_1", workspace="/pinned")}
+    )
+    project_store = FakeProjectConfigStore({"project_1": {"workspace": "/project/folder"}})
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    on_fire = build_on_fire(
+        _deps(store, conversation_store=conv_store, project_store=project_store),
+        launch_dispatch=_launch,
+    )
+    await on_fire(0, "task_1")
+    await _drain()
+
+    assert conv_store.created[0]["workspace"] == "/pinned"
+
+
+@pytest.mark.asyncio
+async def test_unknown_project_records_failed_run_without_conversation() -> None:
+    conv_store = FakeConversationStore()
+    store = FakeScheduledTaskStore(rows={"task_1": _task(project_id="ghost", workspace=None)})
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    on_fire = build_on_fire(
+        _deps(store, conversation_store=conv_store, project_store=FakeProjectConfigStore()),
+        launch_dispatch=_launch,
+    )
+    await on_fire(0, "task_1")
+    await _drain()
+
+    assert conv_store.created == []
+    assert len(store.runs) == 1
+    assert store.runs[0]["status"] == "failed"
+    assert store.runs[0]["error_code"] == "not_found"
+
+
 @pytest.mark.parametrize("dispatch_enabled", [False, True])
 async def test_deleted_owner_disables_task_and_records_failed_run(dispatch_enabled: bool) -> None:
     """A task whose owner no longer exists is disabled, not resurrected."""
@@ -1201,6 +1309,43 @@ async def test_owner_generation_check(
 
     with account_checks_scope(checks_enabled):
         assert await fire_mod._owner_is_deleted(deps, task) is expected_deleted
+
+
+@pytest.mark.asyncio
+async def test_project_without_project_store_records_failed_run() -> None:
+    conv_store = FakeConversationStore()
+    store = FakeScheduledTaskStore(rows={"task_1": _task(project_id="project_1", workspace=None)})
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    on_fire = build_on_fire(
+        _deps(store, conversation_store=conv_store),
+        launch_dispatch=_launch,
+    )
+    await on_fire(0, "task_1")
+    await _drain()
+
+    assert conv_store.created == []
+    assert len(store.runs) == 1
+    assert store.runs[0]["status"] == "failed"
+    assert store.runs[0]["error_code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_fire_stamps_session_control_from_schedule() -> None:
+    """A fired session carries the schedule's control grant as durable state."""
+    conv_store = FakeConversationStore()
+    store = FakeScheduledTaskStore(rows={"task_1": _task(agent_session_control=True)})
+
+    async def _launch(conv: Any, task: Any) -> None:
+        return None
+
+    on_fire = build_on_fire(_deps(store, conversation_store=conv_store), launch_dispatch=_launch)
+    await on_fire(0, "task_1")
+    await _drain()
+
+    assert conv_store.created[0]["labels"][SCHEDULED_AGENT_SESSION_CONTROL_LABEL] == "true"
 
 
 def _claude_agent_deps(
@@ -1521,7 +1666,7 @@ async def test_non_native_host_bound_task_stamps_repl_terminal_label() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_native_task_without_agent_cache_stamps_no_labels() -> None:
+async def test_non_native_task_without_agent_cache_stamps_no_presentation_labels() -> None:
     """A non-native SDK task without an agent cache stays Chat-only.
 
     The REPL-terminal branch needs the cache to resolve the harness, so with no
@@ -1542,6 +1687,17 @@ async def test_non_native_task_without_agent_cache_stamps_no_labels() -> None:
     await _drain()
 
     assert len(conv_store.created) == 1
+    # The control grant and the run ids are stamped at creation; nothing adds a
+    # presentation label.
+    labels = conv_store.created[0]["labels"]
+    assert labels[SCHEDULED_TASK_ORIGIN_LABEL_KEY] == "task_1"
+    assert labels[SCHEDULED_AGENT_SESSION_CONTROL_LABEL] == "false"
+    assert set(labels) == {
+        SCHEDULED_TASK_ORIGIN_LABEL_KEY,
+        SCHEDULED_AGENT_SESSION_CONTROL_LABEL,
+        SCHEDULED_TASK_RUN_LABEL_KEY,
+        SCHEDULED_TASK_INITIAL_RUN_LABEL_KEY,
+    }
     assert conv_store.label_writes == {}
 
 
@@ -3008,6 +3164,15 @@ def _continued_session(**overrides: Any) -> _FakeConversation:
     return _FakeConversation(**fields)
 
 
+def _control_label_writes(store: FakeConversationStore, conversation_id: str) -> list[str]:
+    """The session-control values written for *conversation_id*, in order."""
+    return [
+        labels[SCHEDULED_AGENT_SESSION_CONTROL_LABEL]
+        for written_id, labels in store.labels
+        if written_id == conversation_id and SCHEDULED_AGENT_SESSION_CONTROL_LABEL in labels
+    ]
+
+
 async def _fire_once(deps: FireDeps) -> list[Any]:
     """Fire task_1 once and return the conversations the launch seam received."""
     launched: list[Any] = []
@@ -3052,6 +3217,48 @@ async def test_continue_sends_the_prompt_into_the_session(worktree: bool) -> Non
     assert [(run["status"], run["conversation_id"]) for run in store.runs] == [
         ("succeeded", "conv_prev")
     ]
+
+
+@pytest.mark.asyncio
+async def test_continue_refreshes_the_session_control_label_before_dispatch() -> None:
+    """A patched Inbox opt-in reaches the continued session's next turn."""
+    conv_store = _ExistingConversationStore(
+        _continued_session(labels={SCHEDULED_AGENT_SESSION_CONTROL_LABEL: "false"})
+    )
+    store = FakeScheduledTaskStore(rows={"task_1": _continuing_task(agent_session_control=True)})
+
+    launched = await _fire_once(_deps(store, conversation_store=conv_store))
+
+    assert _control_label_writes(conv_store, "conv_prev") == ["true"]
+    assert launched[0].labels[SCHEDULED_AGENT_SESSION_CONTROL_LABEL] == "true"
+
+
+@pytest.mark.asyncio
+async def test_continue_clears_the_session_control_label_when_opted_out() -> None:
+    """An explicit opt-out revokes the capability a session already carries."""
+    conv_store = _ExistingConversationStore(
+        _continued_session(labels={SCHEDULED_AGENT_SESSION_CONTROL_LABEL: "true"})
+    )
+    store = FakeScheduledTaskStore(rows={"task_1": _continuing_task(agent_session_control=False)})
+
+    launched = await _fire_once(_deps(store, conversation_store=conv_store))
+
+    assert _control_label_writes(conv_store, "conv_prev") == ["false"]
+    assert launched[0].labels[SCHEDULED_AGENT_SESSION_CONTROL_LABEL] == "false"
+
+
+@pytest.mark.asyncio
+async def test_continue_leaves_a_matching_session_control_label_untouched() -> None:
+    """A matching capability is not rewritten on every firing."""
+    conv_store = _ExistingConversationStore(
+        _continued_session(labels={SCHEDULED_AGENT_SESSION_CONTROL_LABEL: "true"})
+    )
+    store = FakeScheduledTaskStore(rows={"task_1": _continuing_task(agent_session_control=True)})
+
+    await _fire_once(_deps(store, conversation_store=conv_store))
+
+    # The run id is stamped; the matching capability is not rewritten.
+    assert _control_label_writes(conv_store, "conv_prev") == []
 
 
 @pytest.mark.asyncio

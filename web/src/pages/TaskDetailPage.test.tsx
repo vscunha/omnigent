@@ -210,6 +210,7 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     mcpServices: [],
     sessionMode: "new",
     sessionId: null,
+    agentSessionControl: false,
     workspace: null,
     hostId: null,
     executionTarget: "connected_host",
