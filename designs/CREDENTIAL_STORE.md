@@ -13,11 +13,10 @@ Two forces shape the design:
    GitHub MCP, …) needs the same shape: a per-user secret + some non-secret
    metadata, connected once and re-vended to sandboxes. We do not want one
    bespoke table per provider.
-2. **Managed key material.** The secret material is encrypted with **AWS KMS** —
-   the key lives in KMS, the server only holds an IAM permission to call
-   `Encrypt`/`Decrypt`, and each ciphertext is bound to its row's identity as the
-   KMS *encryption context*. This gives per-user encryption, rotation, audit, and
-   "the app process never holds the raw key" without us managing key material.
+2. **Managed key material.** Secrets use AWS KMS, HashiCorp Vault Transit, or
+   Azure Key Vault. The master key stays in its service; the server receives only
+   narrowly scoped cryptographic permissions. Each ciphertext is bound to its
+   row identity, preventing cross-user replay.
 
 Getting the schema generic now is cheap; reshaping a provider-specific table
 after users have connected means migrating encrypted rows. Hence this store
@@ -31,11 +30,10 @@ The design deliberately separates two concerns that are easy to conflate:
 | Axis | What varies | This design |
 | --- | --- | --- |
 | **Data model** | "a credential for *any* provider, per user" | one generic table + typed façades per provider |
-| **Secret backend** | *where* the key lives and *who* encrypts | a `SecretCipher` port; AWS KMS is the implementation |
+| **Secret backend** | *where* the key lives and *who* encrypts | a `SecretCipher` port with KMS, Vault Transit, and Azure Key Vault adapters |
 
 Keeping them orthogonal means a new provider is a façade (no schema change) and
-a different key backend (GCP/Azure KMS, Vault Transit) is a cipher adapter (no
-schema change).
+a different key backend is a cipher adapter (no schema change).
 
 ## Data model
 
@@ -47,7 +45,7 @@ One table, `connections`:
 | `user_id` | str(128) | omnigent user, part of PK |
 | `provider` | str(64) | e.g. `"github"`, part of PK |
 | `account_id` | str(128) | provider account discriminator, part of PK; `""` = the user's single account for that provider |
-| `secret_enc` | text | KMS ciphertext (base64) of a JSON blob holding *all* secret material (access token, refresh token, …) |
+| `secret_enc` | text | Backend-specific ciphertext envelope holding *all* secret material (access token, refresh token, …) |
 | `metadata_json` | text | non-secret provider metadata (login, ids, scopes, expiries, …) as JSON |
 | `created_at` / `updated_at` | integer | unix epoch seconds (repo convention; `workspace_id` is the lone `bigint`) |
 
@@ -73,22 +71,19 @@ class SecretCipher(Protocol):
 
 `context` is the row's identity (`workspace`/`user`/`provider`/`account`) and is
 **required** — every secret is bound to a user; there is no unbound/global-key
-path. The store depends on this port, not on a concrete backend, so the KMS
-implementation can be swapped for GCP/Azure KMS or Vault Transit without a
-schema change.
+path. The store depends on this port, not on a concrete backend, so KMS, Vault
+Transit, and Azure Key Vault can be selected without a schema change.
 
-`KmsSecretCipher` is the implementation: `encrypt` is one `kms:Encrypt` call
-under the configured key with `context` as the KMS encryption context; the
-returned ciphertext blob is stored base64. Blobs are small (a token JSON
-object), well under the 4 KB `Encrypt` limit, so no envelope/data-key layer is
-needed. `decrypt` is `kms:Decrypt` with the same context.
+`KmsSecretCipher` calls KMS with the row identity as its encryption context.
+`VaultSecretCipher` uses a derived Transit key and the same row context.
+`AzureKeyVaultSecretCipher` uses a random AES-GCM data key wrapped by an RSA key
+in Key Vault; the row identity is authenticated data. Its envelope stores the
+versioned Key Vault key id so key rotation preserves access to existing rows.
 
 `build_secret_cipher()` is the single seam where a deployment selects the
-backend; it reads the **store-level** key `OMNIGENT_CREDENTIAL_KMS_KEY_ID` (id,
-ARN, or `alias/…`) and returns the cipher, or `None` when unset — the store, and
-every integration on it, is then disabled. **There is no non-KMS fallback:** no
-key configured means the feature is off, not that it silently encrypts with a
-local key.
+backend. The chosen backend's key settings are required. If none are set, the
+store and every integration on it are disabled. **There is no local-key
+fallback.**
 
 The key belongs to the **credential store**, not to any one provider: every
 provider façade shares the one cipher, so connecting an MCP server or Datadog
@@ -100,33 +95,22 @@ ability to encrypt.
 
 The *tenancy boundary* is the primary key and the `workspace_id`-scoped queries
 — that is what stops user A reading user B's row, and it holds regardless of the
-cipher. The KMS encryption context is not an access-control boundary; it is
-cryptographic binding. What it buys:
+cipher. The encryption context is cryptographic binding, not an access-control
+boundary. Every backend keeps the master key outside the application process
+and binds ciphertext to `{workspace, user, provider, account}`.
 
-- **The master key never enters the process.** KMS does the crypto inside its
-  HSM; the server holds only an IAM permission (via IRSA). A stolen DB dump *and*
-  a compromised server yield no exportable key — an attacker can only call
-  `Decrypt` while the pod's credentials are valid, which is logged in CloudTrail
-  and revocable.
-- **Per-row binding.** A ciphertext can only be decrypted by presenting the same
-  `{workspace, user, provider, account}` context, so a blob can't be replayed
-  under a different identity, and a leak is scoped to one row.
-- **Rotation / revocation / audit** are KMS key-policy operations, not app
-  changes: rotate the key (versions, no re-encrypt), disable it to stop all
-  decrypts, read every call in CloudTrail. An encryption-context *condition* in
-  the key policy can further constrain what the server may decrypt.
+Azure uses a fresh data key per value, AES-GCM additional authenticated data
+for that identity, and Key Vault RSA-OAEP-256 to wrap the data key. The versioned
+key id is stored with the envelope; retain old key versions until their rows
+are re-encrypted or removed. KMS binds the same identity through its encryption
+context; Vault Transit uses its derived-key context. Empty context values are
+dropped consistently by all implementations.
 
-Empty-valued context fields (`account_id=""`, the default single account) are
-dropped before the KMS call — KMS rejects empty encryption-context values — done
-consistently on encrypt and decrypt, so the binding is unchanged and a named
-account still yields a distinct context.
-
-`decrypt` returning `None` (not raising) on a ciphertext/context mismatch
-(`InvalidCiphertextException` / `IncorrectKeyException`) is load-bearing: a
-rotated-away key degrades to "reconnect this integration," never a 500 on the
-vend path. Operational failures — access denied, disabled key, throttling —
-propagate instead, since telling the user to reconnect wouldn't help and would
-hide a misconfiguration.
+`decrypt` returning `None` (not raising) on a ciphertext/context mismatch is
+load-bearing: corrupt or wrong-context data degrades to "reconnect this
+integration," never a 500 on the vend path. Operational failures — access
+denied, disabled keys, or throttling — propagate instead, since reconnecting
+would hide a misconfiguration.
 
 ### Pod → KMS auth (IRSA)
 
@@ -151,7 +135,7 @@ ConnectionStore(ABC)   per-provider façade: maps the provider surface ⇄ a row
 CredentialStore        the one concrete DB backend (SQLAlchemy) — uniform writes
    │
    ▼
-SecretCipher(Protocol) encrypt/decrypt the secret blob (KmsSecretCipher impl)
+SecretCipher(Protocol) encrypt/decrypt the secret blob (KMS, Vault, Azure Key Vault)
 ```
 
 - **`CredentialStore`** is the generic, provider-agnostic persistence: rows keyed
@@ -203,26 +187,26 @@ a 500, and the token is never persisted in the sandbox.
 A vended GitHub token's blast radius is bounded by the launch token: the broker
 resolves `(host_id, launch_token)` server-side and stops vending the moment the
 launch token expires or the host row is deleted, and the raw token never touches
-sandbox disk. KMS adds its own layer — CloudTrail logs every `Decrypt`, and
-disabling the key stops all decrypts globally — but KMS does not know about
-launch tokens. So "stops vending when the session ends" must remain a
-server-side check on the broker path, independent of KMS; KMS is defence in
-depth on the storage, not the session boundary.
+sandbox disk. The selected key service can audit and revoke cryptographic
+operations, but it does not know about launch tokens. So "stops vending when
+the session ends" must remain a server-side check on the broker path; key
+management is defence in depth on storage, not the session boundary.
 
 ## Dependencies
 
 The credential store is backend-agnostic; each `SecretCipher` backend declares its
-own extra, both imported lazily:
+own extra and imports its SDK lazily:
 
 - **AWS KMS** (`KmsSecretCipher`) needs boto3 — `omnigent[kms]`.
 - **HashiCorp Vault** (`VaultSecretCipher`, Transit) needs hvac — `omnigent[vault]`.
+- **Azure Key Vault** (`AzureKeyVaultSecretCipher`) needs Azure Identity and Key
+  Vault SDKs — `omnigent[azure-key-vault]`.
 
-boto3 / hvac load only when the matching backend is selected
-(`OMNIGENT_CREDENTIAL_KMS_KEY_ID` / `OMNIGENT_CREDENTIAL_VAULT_KEY`), so a deployment
-that doesn't enable the credential store — or uses the other backend — needs neither.
+Cloud SDKs load only when the matching backend is selected, so deployments do
+not need to install unused provider SDKs.
 
-`OMNIGENT_CREDENTIAL_CIPHER` (`kms` | `vault`) selects the backend explicitly per
-server; the chosen backend's key env var is then required. Leave it unset to
+`OMNIGENT_CREDENTIAL_CIPHER` (`kms` | `vault` | `azure_key_vault`) selects the
+backend explicitly per server; its key settings are then required. Leave it unset to
 auto-detect the single configured backend — configuring more than one without the
 selector is an error (no silent precedence), and configuring none disables the store.
 

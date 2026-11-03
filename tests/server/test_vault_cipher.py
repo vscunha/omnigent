@@ -17,6 +17,10 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError
 
+from omnigent.stores.credential_store.azure_key_vault_cipher import (
+    CREDENTIAL_AZURE_KEY_NAME_ENV_VAR,
+    CREDENTIAL_AZURE_KEY_VAULT_URL_ENV_VAR,
+)
 from omnigent.stores.credential_store.secret_cipher import (
     CREDENTIAL_CIPHER_ENV_VAR,
     CREDENTIAL_KMS_KEY_ENV_VAR,
@@ -150,6 +154,8 @@ def _clear_backend_env(mp: pytest.MonkeyPatch) -> None:
         CREDENTIAL_CIPHER_ENV_VAR,
         CREDENTIAL_KMS_KEY_ENV_VAR,
         CREDENTIAL_VAULT_KEY_ENV_VAR,
+        CREDENTIAL_AZURE_KEY_NAME_ENV_VAR,
+        CREDENTIAL_AZURE_KEY_VAULT_URL_ENV_VAR,
     ):
         mp.delenv(var, raising=False)
 
