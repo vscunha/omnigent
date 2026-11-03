@@ -105,11 +105,13 @@ def test_scheduled_tasks_columns(db_engine: Engine) -> None:
         "rrule",
         "user_id",
         "agent_id",
+        "project_id",
         "account_generation",
         "model_override",
         "reasoning_effort",
         "permission_mode",
         "mcp_services",
+        "agent_session_control",
         "max_cost_usd",
         "workspace",
         "base_branch",
@@ -122,7 +124,6 @@ def test_scheduled_tasks_columns(db_engine: Engine) -> None:
         "created_at",
         "updated_at",
         "next_run_at",
-        "project_id",
         "delegation_ref",
         "session_mode",
         "session_id",
@@ -362,10 +363,11 @@ def test_state_default_on_omitted_insert(db_engine: Engine) -> None:
                 "'FREQ=DAILY;BYHOUR=9;BYMINUTE=0', 'u', 'ag_1', 'UTC', 1)"
             )
         )
-        state, workspace_id, execution_target, session_mode, session_id = conn.execute(
+        state, workspace_id, execution_target, session_mode, session_id, control = conn.execute(
             sa.text(
-                "SELECT state, workspace_id, execution_target, session_mode, session_id "
-                "FROM scheduled_tasks WHERE id = X'00000000000000000000000000000de1'"
+                "SELECT state, workspace_id, execution_target, session_mode, session_id, "
+                "agent_session_control FROM scheduled_tasks "
+                "WHERE id = X'00000000000000000000000000000de1'"
             )
         ).one()
     assert state == 1  # 1 = 'active'
@@ -373,6 +375,7 @@ def test_state_default_on_omitted_insert(db_engine: Engine) -> None:
     assert execution_target == 1  # 1 = 'connected_host'
     assert session_mode == 1  # 1 = 'new'
     assert session_id is None
+    assert control == 0
 
 
 def test_execution_target_check_rejects_bad_code(db_engine: Engine) -> None:
