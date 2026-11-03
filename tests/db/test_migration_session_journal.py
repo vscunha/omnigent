@@ -14,10 +14,23 @@ from alembic.operations import Operations
 from sqlalchemy.dialects import mysql
 
 from omnigent.db.db_models import SqlSessionJournalEntry, SqlSessionJournalHead, SqlWorkflow
+from omnigent.db.migration_heads import script_directory
 from omnigent.db.utils import _build_alembic_config, clear_engine_cache
 
 _ENTRIES = "session_journal_entries"
 _HEADS = "session_journal_heads"
+
+
+def _local_lineage_head() -> str:
+    """The head of this deployment's own lineage, which a downgrade leaves behind.
+
+    A deployment that merges its own migrations with upstream's keeps a second
+    ``alembic_version`` row when only upstream's branch is rewound.
+    """
+    script = script_directory(_build_alembic_config("sqlite:///:memory:"))
+    [head] = script.get_heads()
+    parents = script.get_revision(head).down_revision
+    return parents if isinstance(parents, str) else parents[0]
 
 
 def test_mysql_journal_content_is_bounded_bytes_the_store_encodes() -> None:
@@ -133,8 +146,8 @@ def test_upgrade_matches_models_and_downgrade_drops_tables(tmp_path: Path) -> No
     assert {"inbox_items", "scheduled_task_shares"} <= tables
     assert "kind" in {column["name"] for column in rolled_back.get_columns("scheduled_tasks")}
     with engine.connect() as connection:
-        assert connection.execute(
-            sa.text("SELECT version_num FROM alembic_version")
-        ).scalars().all() == ["27d16059fab9"]
+        assert sorted(
+            connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalars()
+        ) == sorted(["27d16059fab9", _local_lineage_head()])
     engine.dispose()
     clear_engine_cache()
