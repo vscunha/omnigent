@@ -217,6 +217,9 @@ kubernetes = ["kubernetes>=36,<38"]
 # OMNIGENT_CREDENTIAL_VAULT_KEY). hvac is imported lazily, like boto3, so
 # only deployments that pick the Vault backend need this extra.
 vault = ["hvac>=2,<3"]
+# Azure Key Vault backend for the credential store's SecretCipher. The SDKs
+# are imported lazily so non-Azure deployments do not install these packages.
+azure-key-vault = ["azure-identity>=1.17,<2", "azure-keyvault-keys>=4.9,<5"]
 # OpenTelemetry tracing is opt-in so the exporters and automatic
 # instrumentors do not inflate the default install.
 tracing = [
