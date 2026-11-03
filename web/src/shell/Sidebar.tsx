@@ -226,6 +226,7 @@ import { SessionStateBadge } from "@/components/SessionStateBadge";
 import { useSessionRunnerOnline } from "@/hooks/RunnerHealthProvider";
 import { useActiveRootSessionId } from "@/hooks/useSession";
 import { stateAsOf } from "@/hooks/useSessionPullRequests";
+import { useInboxNotifications } from "@/hooks/useInboxNotifications";
 import { isSessionStoppable } from "@/lib/sessionStop";
 import { SidebarEditRow } from "./SidebarEditRow";
 import { isInClosedSidebar, registerSidebarRename } from "./sidebarRename";
@@ -926,13 +927,16 @@ function SidebarImpl({
           (id !== activeConversationId || isExplicitlyUnread(id)),
       ).length,
   );
-  const inboxCount = sidebarData.inboxCount + unreadInboxCount;
+  // The durable inbox notifications add their outstanding count on top.
+  const notificationCount = useInboxNotifications().data?.outstanding_count ?? 0;
+  const inboxCount = sidebarData.inboxCount + unreadInboxCount + notificationCount;
   const inboxCountIncomplete = sidebarData.inboxCountIncomplete;
   const inboxCountCapped = sidebarData.inboxCountCapped;
 
   // The scrollable list container — used as the IntersectionObserver root for
   // infinite scroll (auto-loading the next page as the sentinel nears view).
   const scrollContainerRef = useRef<HTMLElement>(null);
+
   const [hasScrolled, setHasScrolled] = useState(false);
   // Show the scrollbar only while actively scrolling; hide it after a pause.
   const [isScrolling, setIsScrolling] = useState(false);
