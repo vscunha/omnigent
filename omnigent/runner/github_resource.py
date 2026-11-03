@@ -109,6 +109,9 @@ _PR_REVIEW_FIELDS = frozenset({"reviewRequests", "latestReviews"})
 _PR_COMMENTS_FIELD = "reviews"
 # Older ``gh`` releases lack these; :func:`_gh_pr_view` retries without them.
 _PR_MERGE_FIELDS = frozenset({"mergeStateStatus", "autoMergeRequest"})
+# gh 2.23 (still shipped by distro packages) predates these fields; an unknown
+# field fails the whole query, so the retry drops them and keeps the PR.
+_PR_OPTIONAL_FIELDS = frozenset({"baseRefOid", "headRepository", "headRepositoryOwner"})
 # Reading check runs needs the Checks permission, which a fine-grained personal
 # access token cannot hold; GitHub refuses just this field and ``gh`` fails the
 # whole call, so :func:`_gh_pr_view` retries without it.
@@ -820,7 +823,15 @@ def _gh_pr_view(
     rc, out, err = _gh(["pr", "view", *args, "--json", fields], cwd=cwd, token=token)
     while rc != 0:
         refused = _refused_pr_fields(err) & set(fields.split(","))
-        refused &= _PR_REVIEW_FIELDS | _PR_MERGE_FIELDS | {_PR_CHECKS_FIELD, _PR_COMMENTS_FIELD}
+        refused &= (
+            _PR_REVIEW_FIELDS
+            | _PR_MERGE_FIELDS
+            | _PR_OPTIONAL_FIELDS
+            | {
+                _PR_CHECKS_FIELD,
+                _PR_COMMENTS_FIELD,
+            }
+        )
         if refused & _PR_REVIEW_FIELDS:
             refused.update(_PR_REVIEW_FIELDS)
         remaining = ",".join(field for field in fields.split(",") if field not in refused)
@@ -1141,7 +1152,8 @@ def _reference_info(root: str, reference: PullRequestRef) -> dict[str, Any]:
     }
     if not info["gh_available"]:
         return info
-    _, accounts = _list_accounts(root)
+    authenticated, accounts = _list_accounts(root)
+    info["authenticated"] = authenticated
     info["accounts"] = [a for a in accounts if a.get("host") == reference.host]
     preferred = _config.github_account_preference(_repo_argument(reference))
     info["selected_account"] = preferred or next(

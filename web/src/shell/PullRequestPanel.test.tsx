@@ -2744,6 +2744,18 @@ describe("derivePullRequestPanelState", () => {
     );
     const noPr = derivePullRequestPanelState(q({ data: { ...ready, pr: null } }));
     expect(noPr).toEqual({ kind: "no-pr", branch: "feat/x" });
+    // A PR the host authenticates for but cannot read is not "no PR yet".
+    expect(
+      derivePullRequestPanelState(
+        q({
+          data: {
+            ...ready,
+            pr: null,
+            selected_pr_url: "https://github.com/acme/app/pull/42",
+          },
+        }),
+      ),
+    ).toEqual({ kind: "selected-pr-unavailable" });
     expect(derivePullRequestPanelState(q({ data: ready }))).toEqual({ kind: "ready" });
   });
 

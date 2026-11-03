@@ -255,6 +255,7 @@ export type PullRequestPanelState =
   | { kind: "no-cli"; cli: string }
   | { kind: "repo-unresolved" }
   | { kind: "no-pr"; branch: string | undefined }
+  | { kind: "selected-pr-unavailable" }
   | { kind: "ready" };
 
 /** Central switch turning the PR info query into the panel's state.
@@ -297,6 +298,7 @@ export function derivePullRequestPanelState(info: {
   // both point the user at the provider's sign-in check.
   if (!auth.authenticated) return { kind: "repo-unresolved" };
   if (!repo?.name_with_owner) return { kind: "repo-unresolved" };
+  if (!pr && data.selected_pr_url) return { kind: "selected-pr-unavailable" };
   if (!pr && data.warnings?.length) return { kind: "unavailable" };
   if (!pr) return { kind: "no-pr", branch };
   return { kind: "ready" };
@@ -1722,6 +1724,40 @@ function PullRequestPanelDetails({
           {emptyStateAction}
         </PullRequestEmptyState>
       );
+    case "selected-pr-unavailable": {
+      const prNumber = info.data?.selected_pr_url?.match(/\/pull\/(\d+)/)?.[1] ?? "<number>";
+      const repository = normalized?.repo?.name_with_owner ?? "<owner/repo>";
+      return (
+        <PullRequestEmptyState
+          icon={AlertCircleIcon}
+          title="Couldn’t load this pull request"
+          hint={
+            copy.id === "github" ? (
+              <>
+                The GitHub CLI reports an authenticated account, but couldn’t read this PR. Try
+                another account if available, or verify access with{" "}
+                <span className="font-mono">
+                  gh pr view {prNumber} --repo {repository}
+                </span>{" "}
+                on the host.
+              </>
+            ) : (
+              <>
+                The {copy.cliLabel} reports an authenticated account, but couldn’t read this pull
+                request. Try another account if available, or verify that the selected{" "}
+                {copy.requestName}
+                is accessible on the host.
+              </>
+            )
+          }
+        >
+          {normalized && (
+            <GithubAccountSelector conversationId={conversationId} info={normalized} />
+          )}
+          {emptyStateAction}
+        </PullRequestEmptyState>
+      );
+    }
     case "no-pr":
       // TODO: offer a "Create PR" action here once the panel can open PRs.
       // No account selector here: the repo resolved, so the account is correct —
