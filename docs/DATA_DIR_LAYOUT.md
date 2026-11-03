@@ -129,11 +129,14 @@ for filename-based limits and their scope.
 ### Native harness state
 
 Native TUI harnesses keep resumable session state in these roots:
-`claude-native/` and `opencode-native/` via `data_dir()`, `codex-native/`
-**†** via `bridge_root()` (pinned to `~/.omnigent`), and `pi-native/` **†**
-and `antigravity-native/` **†** (also pinned to `~/.omnigent`).
-The Codex bridge root is producer-owned and is not relocated by
-`OMNIGENT_DATA_DIR` or `OMNIGENT_CONFIG_HOME`.
+`claude-native/`, `opencode-native/`, `codex-native/`, `pi-native/`, and
+`antigravity-native/` via `data_dir()`. Set `OMNIGENT_DATA_DIR` consistently
+for the host and its bridge subprocesses to use a different physical root;
+`OMNIGENT_CONFIG_HOME` does not relocate it. Native bridge directories must
+not traverse symlinks. For a symlinked default data directory, explicitly
+configure its canonical physical path, whose parent must be trusted and
+not group/world-writable; this preserves state without bypassing bridge
+security checks.
 
 Each Codex-native session directory also contains a private `codex-home/` with
 its `sessions/` and `archived_sessions/` rollout JSONL. Local session import
