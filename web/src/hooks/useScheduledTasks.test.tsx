@@ -39,6 +39,7 @@ const TASK: api.ScheduledTask = {
   rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
   ownerUserId: null,
   agentId: "ag_1",
+  projectId: null,
   timezone: "UTC",
   createdAt: 1,
   updatedAt: 2,
@@ -47,10 +48,10 @@ const TASK: api.ScheduledTask = {
   permissionMode: null,
   sessionMode: "new",
   sessionId: null,
+  agentSessionControl: false,
   workspace: null,
   hostId: null,
   executionTarget: "connected_host",
-  projectId: null,
   state: "active",
   lastRunAt: null,
   lastRunStatus: null,
@@ -167,6 +168,10 @@ describe("mutations invalidate the list", () => {
     // once. Driving it to terminal is the refetchInterval's job, not this
     // mutation's — it must NOT start a poll of its own.
     expect(spy).toHaveBeenCalledWith({ queryKey: scheduledTaskRunsKey("st_1") });
+    // A run creates a new conversation asynchronously. Refresh the global
+    // conversation cache too so the persistent sidebar can discover it without
+    // a page reload or waiting for its background poll.
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["conversations"] });
   });
 
   it("run-now does NOT schedule its own follow-up refetches (no accelerated poll)", async () => {

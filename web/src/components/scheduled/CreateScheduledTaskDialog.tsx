@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -129,6 +130,7 @@ export function CreateScheduledTaskDialog({
   const [pickedModel, setPickedModel] = useState<string>("");
   const [pickedEffort, setPickedEffort] = useState<string>("");
   const [pickedPermission, setPickedPermission] = useState<string>("");
+  const [agentSessionControl, setAgentSessionControl] = useState(false);
 
   const agentList = useMemo(() => selectableSessionAgents(agents ?? []), [agents]);
   const harnessEntries = useMemo(
@@ -282,6 +284,7 @@ export function CreateScheduledTaskDialog({
     if (open && !wasOpen.current) {
       setAdvancedOpen(true);
       setTimezone(editingTask?.timezone ?? localTimezone());
+      setAgentSessionControl(editingTask?.agentSessionControl ?? false);
       if (editingTask) {
         const parsedSchedule = savedSchedule;
         setName(editingTask.name);
@@ -412,6 +415,7 @@ export function CreateScheduledTaskDialog({
     setPickedModel("");
     setPickedEffort("");
     setPickedPermission("");
+    setAgentSessionControl(false);
     setSchedule(DEFAULT_SCHEDULE_MODEL);
     setHostId("");
     setWorkspace("");
@@ -447,6 +451,9 @@ export function CreateScheduledTaskDialog({
         prompt: effectivePrompt.trim(),
         rrule: buildRRule(schedule),
         timezone,
+        ...(agentSessionControl !== (editingTask?.agentSessionControl ?? false)
+          ? { agentSessionControl }
+          : {}),
         ...(executionTargetChanged ? { executionTarget } : {}),
         ...(!sandboxMode && hostId !== "" ? { hostId } : {}),
         ...(!sandboxMode && hostId !== "" && workspace.trim() !== ""
@@ -632,6 +639,20 @@ export function CreateScheduledTaskDialog({
               />
             </div>
           )}
+
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-3">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="task-agent-session-control">Allow Inbox notifications</Label>
+              <p className="text-sm text-muted-foreground">
+                Lets this automation post notifications to your Inbox when it needs attention.
+              </p>
+            </div>
+            <Switch
+              id="task-agent-session-control"
+              checked={agentSessionControl}
+              onCheckedChange={setAgentSessionControl}
+            />
+          </div>
 
           <ScheduleFields
             timezone={timezone}

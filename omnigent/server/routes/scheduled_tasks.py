@@ -80,12 +80,14 @@ class CreateScheduledTaskRequest(BaseModel):
     prompt: str
     rrule: str
     agent_id: str
+    project_id: str | None = None
     timezone: str = "UTC"
     model_override: str | None = None
     reasoning_effort: str | None = None
     # Native-harness permission mode (Claude Code), e.g. "acceptEdits". The fire
     # path derives the runner's --permission-mode launch arg from it.
     permission_mode: str | None = None
+    agent_session_control: bool = False
     max_cost_usd: float | None = Field(default=None, gt=0)
     # "continue" sends every run's prompt into one session: ``session_id`` when
     # given, else the session the first run creates.
@@ -103,8 +105,6 @@ class CreateScheduledTaskRequest(BaseModel):
     # ``managed_sandbox`` runs the task in a fresh server-provisioned sandbox
     # (no host_id/workspace); default keeps the connected-host behavior.
     execution_target: str = "connected_host"
-    # One of the caller's projects to file fired sessions into.
-    project_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_create(self) -> CreateScheduledTaskRequest:
@@ -131,10 +131,12 @@ class UpdateScheduledTaskRequest(BaseModel):
     # per-agent settings below do not survive the switch — see the PATCH
     # handler, which clears any the caller does not resend.
     agent_id: str | None = Field(default=None, min_length=1)
+    project_id: str | None = None
     timezone: str | None = None
     model_override: str | None = None
     reasoning_effort: str | None = None
     permission_mode: str | None = None
+    agent_session_control: bool = False
     max_cost_usd: float | None = Field(default=None, gt=0)  # null clears the cap
     session_mode: Literal["new", "continue"] | None = None
     # Null makes a continue-mode task's next run start a new session.
@@ -143,7 +145,6 @@ class UpdateScheduledTaskRequest(BaseModel):
     host_id: str | None = Field(default=None, min_length=1)
     execution_target: str | None = Field(default=None, min_length=1)
     state: str | None = None
-    project_id: str | None = None  # null unfiles future runs
 
     @model_validator(mode="after")
     def _validate_patch(self) -> UpdateScheduledTaskRequest:
@@ -210,6 +211,7 @@ def _to_response(
         "model_override": task.model_override,
         "reasoning_effort": task.reasoning_effort,
         "permission_mode": task.permission_mode,
+        "agent_session_control": task.agent_session_control,
         "max_cost_usd": task.max_cost_usd,
         "session_mode": task.session_mode,
         "session_id": task.session_id,
@@ -359,10 +361,10 @@ def create_scheduled_tasks_router(
     agent_store: AgentStore,
     conversation_store: ConversationStore,
     permission_store: PermissionStore | None = None,
+    project_store: ProjectStore | None = None,
     agent_cache: Any | None = None,
     auth_provider: AuthProvider | None = None,
     artifact_store: ArtifactStore | None = None,
-    project_store: ProjectStore | None = None,
     automations: DeploymentGate = True,
 ) -> APIRouter:
     """Build the scheduled-tasks router.
@@ -630,6 +632,7 @@ def create_scheduled_tasks_router(
                 model_override=model_override,
                 reasoning_effort=reasoning_effort,
                 permission_mode=permission_mode,
+                agent_session_control=body.agent_session_control,
                 max_cost_usd=body.max_cost_usd,
                 session_mode=body.session_mode,
                 session_id=body.session_id,

@@ -41,7 +41,9 @@ class SysScheduledTaskCreateTool(Tool):
             "on a recurring schedule (RRULE). Provide the agent to run, the "
             "prompt to send it, and the recurrence rule. The workspace is always "
             "optional and defaults to the launch host's home directory (fine for "
-            "MCP-only / chat tasks that touch no code directory). Optionally PIN "
+            "MCP-only / chat tasks that touch no code directory); when the task "
+            "files into a project and pins no workspace, the project's configured "
+            "default workspace is used instead. Optionally PIN "
             "a connected host and/or a workspace on it; with no pinned host it "
             "runs on your live host at fire time (the owner must have an online "
             "host then, else the run is recorded as failed). The task fires "
@@ -103,6 +105,12 @@ class SysScheduledTaskCreateTool(Tool):
                                 "stalls waiting for approval — prefer an auto-running mode. "
                                 "Set null for the agent default. This field is required so "
                                 "the user can review the effective task setting."
+                            ),
+                        },
+                        "agent_session_control": {
+                            "type": "boolean",
+                            "description": (
+                                "Allow each fired session to post user Inbox notifications."
                             ),
                         },
                         "max_cost_usd": {
@@ -282,6 +290,12 @@ class SysScheduledTaskUpdateTool(Tool):
                                 "default. Required for approval review; resend the current "
                                 "value when it is unchanged. When switching to a harness "
                                 "without permission-mode support, send null."
+                            ),
+                        },
+                        "agent_session_control": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether future runs may post user Inbox notifications."
                             ),
                         },
                         "max_cost_usd": {

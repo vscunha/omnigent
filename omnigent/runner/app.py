@@ -37,6 +37,7 @@ import httpx
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from omnigent._session_labels import SCHEDULED_AGENT_SESSION_CONTROL_LABEL
 from omnigent.acp_cli_harnesses import ACP_CLI_HARNESSES
 from omnigent.debug_logging import (
     debug_event,
@@ -557,7 +558,24 @@ def _response_body_preview(resp: object, *, limit: int = 500) -> str:
     return ""
 
 
-@dataclasses.dataclass
+def _apply_scheduled_session_control(
+    entry: _SpecEntry,
+    labels: Mapping[str, str],
+) -> _SpecEntry:
+    """Apply a scheduled run's explicit session-control setting to its spec."""
+    raw = labels.get(SCHEDULED_AGENT_SESSION_CONTROL_LABEL)
+    if raw not in {"true", "false"}:
+        return entry
+    enabled = raw == "true"
+    spec = _unwrap_spec_entry(entry)
+    if spec.agent_session_control is enabled:
+        return entry
+    updated_spec = dataclasses.replace(spec, agent_session_control=enabled)
+    if isinstance(entry, ResolvedSpec):
+        return dataclasses.replace(entry, spec=updated_spec)
+    return updated_spec
+
+
 @dataclasses.dataclass(frozen=True)
 class _SessionSnapshot:
     """One ``GET /v1/sessions/{id}`` projected for all runner readers.
@@ -595,6 +613,8 @@ class _SessionSnapshot:
         a rebuilt work entry so wake suppression keyed on the child's
         ownership survives a reconnect / restart. ``None`` when unlabelled /
         the fetch failed.
+    :param labels: Server-owned session labels used for persisted runtime
+        capability overrides.
     """
 
     ok: bool
@@ -606,6 +626,7 @@ class _SessionSnapshot:
     parent_session_id: str | None = None
     agent_name: str | None = None
     wrapper_label: str | None = None
+    labels: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2177,6 +2198,7 @@ def create_runner_app(
             parent_session_id: str | None = None
             agent_name: str | None = None
             wrapper_label: str | None = None
+            labels: dict[str, str] = {}
             try:
                 resp = await server_client.get(
                     f"/v1/sessions/{session_id}", params=_SESSION_METADATA_PARAMS
@@ -2201,6 +2223,9 @@ def create_runner_app(
                     if isinstance(raw_agent_name, str) and raw_agent_name:
                         agent_name = raw_agent_name
                     wrapper_label = wrapper_label_from_labels(body.get("labels"))
+                    raw_labels = body.get("labels")
+                    if isinstance(raw_labels, dict):
+                        labels = {str(key): str(value) for key, value in raw_labels.items()}
             except Exception:  # noqa: BLE001 — best-effort; created_at falls back to wall time
                 pass
             snapshot = _SessionSnapshot(
@@ -2213,11 +2238,50 @@ def create_runner_app(
                 parent_session_id=parent_session_id,
                 agent_name=agent_name,
                 wrapper_label=wrapper_label,
+                labels=labels,
             )
             if snapshot.ok and snapshot.agent_id is not None:
                 if _session_cache_generation_is_current(session_id, generation):
                     _session_snapshot_cache[session_id] = snapshot
             return snapshot
+
+    # Session-scoped capability overlays (a scheduled task's explicit session
+    # control, for one) live on the conversation, not the agent bundle. Apply
+    # them on EVERY spec resolution: a turn that invalidates agent-derived
+    # caches after an agent-revision change resolves the raw bundle again, and
+    # without this the session silently loses its Inbox notification tool.
+    _raw_spec_resolver = spec_resolver
+
+    async def _spec_resolver_with_session_control(
+        agent_id: str, session_id: str | None = None
+    ) -> _SpecEntry | None:
+        """Resolve an agent bundle and re-apply the session's capability overlay.
+
+        Session init and the session-spec cache apply the scheduled
+        ``agent_session_control`` label, but both the first turn's
+        agent-revision cache reset and the direct-stream turn path resolve the
+        raw bundle through the resolver. Routing those reads through here keeps
+        a scheduled session's Inbox notification opt-in stable for the whole run.
+
+        :param agent_id: Bundled agent id to resolve, e.g. ``"ag_abc123"``.
+        :param session_id: Session whose persisted labels carry the overlay,
+            e.g. ``"conv_abc123"``; ``None`` skips the overlay.
+        :returns: The resolved spec entry with the overlay applied, or ``None``.
+        """
+        if _raw_spec_resolver is None:
+            return None
+        entry = await _raw_spec_resolver(agent_id, session_id)
+        if entry is None or session_id is None:
+            return entry
+        snapshot = await _session_snapshot(session_id)
+        if not snapshot.ok:
+            return entry
+        return _apply_scheduled_session_control(entry, snapshot.labels)
+
+    # Keep the caller's ``None`` contract: a runner built without a resolver
+    # must still report "no resolver" rather than a missing agent.
+    if _raw_spec_resolver is not None:
+        spec_resolver = _spec_resolver_with_session_control
 
     async def _session_workspace_value(session_id: str) -> str | None:
         if session_id not in _session_workspace_cache:
@@ -2299,6 +2363,7 @@ def create_runner_app(
             sub_agent_name=envelope.sub_agent_name,
             parent_session_id=snapshot.parent_session_id,
             wrapper_label=wrapper_label_from_labels(snapshot.labels),
+            labels=dict(snapshot.labels),
         )
         _session_start_cache[session_id] = float(snapshot.created_at)
         _session_workspace_cache[session_id] = snapshot.workspace
@@ -2710,6 +2775,9 @@ def create_runner_app(
                     spec_entry = _sub_entry
                     spec = _unwrap_resolved_spec(_sub_entry)
                     _session_sub_agent_resolved[session_id] = True
+            if init_context.labels is not None:
+                spec_entry = _apply_scheduled_session_control(spec_entry, init_context.labels)
+                spec = _unwrap_spec_entry(spec_entry)
             # The session's override outranks the spec: resolving from the spec
             # alone made init spawn a harness the turns never ask for, evicting
             # the override's live subprocess (entries are keyed by conversation).
@@ -7838,6 +7906,7 @@ def create_runner_app(
                     else:
                         spec_entry = sub_entry
                         _session_sub_agent_resolved[session_id] = True
+            spec_entry = _apply_scheduled_session_control(spec_entry, snapshot.labels)
             if _session_cache_generation_is_current(session_id, generation):
                 _session_spec_cache[session_id] = spec_entry
             return spec_entry

@@ -235,6 +235,10 @@ export function useRunScheduledTaskNow() {
       // Surfaces the new "running" row immediately; the run-history
       // refetchInterval takes it from there.
       void queryClient.invalidateQueries({ queryKey: scheduledTaskRunsKey(id) });
+      // The fire path creates the agent conversation in the background. Keep
+      // the persistent sidebar in sync with a manual run instead of waiting
+      // for its low-rate reconciliation poll or a full page reload.
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
   });
 }

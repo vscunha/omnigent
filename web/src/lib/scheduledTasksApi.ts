@@ -58,6 +58,8 @@ export interface ScheduledTask {
   sessionMode: ScheduledTaskSessionMode;
   /** The session a `"continue"` task sends to; `null` until its first run creates one. */
   sessionId: string | null;
+  /** Allow this automation's sessions to post Inbox notifications. */
+  agentSessionControl: boolean;
   /** Pinned absolute workspace, or `null` (server defaults to the host home). */
   workspace: string | null;
   /** Pinned host, or `null` (server resolves the connected host at fire time). */
@@ -130,6 +132,7 @@ export interface CreateScheduledTaskInput {
   permissionMode?: string | null;
   /** `"continue"` keeps one session across runs; omit for a new session per run. */
   sessionMode?: ScheduledTaskSessionMode;
+  agentSessionControl?: boolean;
   /** Optional pinned workspace; only valid together with `hostId`. */
   workspace?: string | null;
   /** Optional pinned host. */
@@ -167,6 +170,7 @@ export interface UpdateScheduledTaskInput {
   sessionMode?: ScheduledTaskSessionMode;
   /** `null` makes a `"continue"` task's next run start the session later runs continue. */
   sessionId?: string | null;
+  agentSessionControl?: boolean;
   workspace?: string;
   hostId?: string;
   /**
@@ -195,6 +199,7 @@ interface ScheduledTaskWire {
   permission_mode: string | null;
   session_mode?: ScheduledTaskSessionMode;
   session_id?: string | null;
+  agent_session_control: boolean;
   workspace: string | null;
   host_id: string | null;
   execution_target: ScheduledTaskExecutionTarget;
@@ -279,6 +284,7 @@ function taskFromWire(wire: ScheduledTaskWire): ScheduledTask {
     permissionMode: wire.permission_mode,
     sessionMode: wire.session_mode ?? "new",
     sessionId: wire.session_id ?? null,
+    agentSessionControl: wire.agent_session_control ?? false,
     workspace: wire.workspace,
     hostId: wire.host_id,
     executionTarget: wire.execution_target,
@@ -346,6 +352,9 @@ export async function createScheduledTask(input: CreateScheduledTaskInput): Prom
   if (input.reasoningEffort != null) body.reasoning_effort = input.reasoningEffort;
   if (input.permissionMode != null) body.permission_mode = input.permissionMode;
   if (input.sessionMode !== undefined) body.session_mode = input.sessionMode;
+  if (input.agentSessionControl !== undefined) {
+    body.agent_session_control = input.agentSessionControl;
+  }
   if (input.workspace != null) body.workspace = input.workspace;
   if (input.hostId != null) body.host_id = input.hostId;
   if (input.executionTarget !== undefined) body.execution_target = input.executionTarget;
@@ -373,16 +382,19 @@ export async function updateScheduledTask(
   if (input.rrule !== undefined) body.rrule = input.rrule;
   if (input.agentId !== undefined) body.agent_id = input.agentId;
   if (input.timezone !== undefined) body.timezone = input.timezone;
+  if (input.projectId !== undefined) body.project_id = input.projectId;
   if (input.modelOverride !== undefined) body.model_override = input.modelOverride;
   if (input.reasoningEffort !== undefined) body.reasoning_effort = input.reasoningEffort;
   if (input.permissionMode !== undefined) body.permission_mode = input.permissionMode;
   if (input.sessionMode !== undefined) body.session_mode = input.sessionMode;
   if (input.sessionId !== undefined) body.session_id = input.sessionId;
+  if (input.agentSessionControl !== undefined) {
+    body.agent_session_control = input.agentSessionControl;
+  }
   if (input.workspace !== undefined) body.workspace = input.workspace;
   if (input.hostId !== undefined) body.host_id = input.hostId;
   if (input.executionTarget !== undefined) body.execution_target = input.executionTarget;
   if (input.state !== undefined) body.state = input.state;
-  if (input.projectId !== undefined) body.project_id = input.projectId;
   const res = await authenticatedFetch(`/v1/scheduled-tasks/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

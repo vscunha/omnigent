@@ -482,6 +482,38 @@ def test_scheduled_task_create_edit_modal_and_time_picker(
     )
 
 
+def test_scheduled_inbox_notification_toggle(page: Page, live_server: str) -> None:
+    """The automation editor persists and clears the Inbox-notification opt-in."""
+    agent_id = _builtin_agent_id(live_server, "claude-native-ui")
+    name = f"Inbox opt-in {uuid.uuid4().hex[:8]}"
+
+    page.goto(f"{live_server}/tasks")
+    page.get_by_test_id("new-task-button").click()
+    expect(page.get_by_test_id("create-scheduled-task-dialog")).to_be_visible(timeout=30_000)
+    page.get_by_test_id("task-name-input").fill(name)
+    page.get_by_test_id("task-prompt-input").fill("Notify me when blocked.")
+    page.get_by_role("switch", name="Allow Inbox notifications").click()
+    page.get_by_test_id("create-scheduled-task-submit").click()
+    row = _row_by_name(page, name)
+    expect(row).to_be_visible(timeout=30_000)
+    tasks = httpx.get(f"{live_server}/v1/scheduled-tasks", timeout=10.0).json()["scheduled_tasks"]
+    task = next(item for item in tasks if item["name"] == name)
+    assert task["agent_session_control"] is True
+    assert "supervised_session_id" not in task
+
+    row.hover()
+    row.get_by_test_id("task-row-menu").click()
+    page.get_by_test_id("task-edit").click()
+    toggle = page.get_by_role("switch", name="Allow Inbox notifications")
+    expect(toggle).to_be_checked()
+    toggle.click()
+    page.get_by_test_id("create-scheduled-task-submit").click()
+    expect(page.get_by_test_id("create-scheduled-task-dialog")).not_to_be_visible()
+    saved = httpx.get(f"{live_server}/v1/scheduled-tasks/{task['id']}", timeout=10.0).json()
+    assert saved["agent_session_control"] is False
+    assert agent_id
+
+
 def test_scheduled_task_row_run_controls(
     page: Page,
     live_server: str,

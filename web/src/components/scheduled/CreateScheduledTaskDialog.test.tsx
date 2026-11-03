@@ -233,6 +233,7 @@ function scheduledTask(overrides: Partial<ScheduledTasksApiModule.ScheduledTask>
     modelOverride: null,
     reasoningEffort: null,
     permissionMode: null,
+    agentSessionControl: false,
     sessionMode: "new",
     sessionId: null,
     workspace: null,
@@ -311,6 +312,17 @@ describe("agent picker readiness (needs-setup badges)", () => {
 });
 
 describe("CreateScheduledTaskDialog validation", () => {
+  it("submits the Inbox notification opt-in", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByTestId("task-name-input"), { target: { value: "Nightly" } });
+    fireEvent.change(screen.getByTestId("task-prompt-input"), { target: { value: "Do it" } });
+    fireEvent.click(screen.getByRole("switch", { name: "Allow Inbox notifications" }));
+    fireEvent.click(screen.getByTestId("create-scheduled-task-submit"));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0][0].agentSessionControl).toBe(true);
+  });
+
   it("keeps submit disabled until name + prompt are set (agent defaults to the first)", () => {
     renderDialog();
     const submit = screen.getByTestId("create-scheduled-task-submit");
@@ -414,6 +426,23 @@ describe("CreateScheduledTaskDialog prefill (seed-on-open + reset)", () => {
 });
 
 describe("CreateScheduledTaskDialog edit mode", () => {
+  it("seeds and updates the Inbox notification opt-in", async () => {
+    render(
+      <CreateScheduledTaskDialog
+        open
+        onOpenChange={vi.fn()}
+        editingTask={scheduledTask({ agentSessionControl: true })}
+      />,
+    );
+    const toggle = screen.getByRole("switch", { name: "Allow Inbox notifications" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId("create-scheduled-task-submit"));
+
+    await waitFor(() => expect(updateMutateAsync).toHaveBeenCalledTimes(1));
+    expect(updateMutateAsync.mock.calls[0][0].input.agentSessionControl).toBe(false);
+  });
+
   it("seeds fields from the scheduled task and uses edit copy", () => {
     render(
       <CreateScheduledTaskDialog

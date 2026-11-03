@@ -116,6 +116,7 @@ async def test_create_posts_payload() -> None:
                 "project_id": "proj_1",
                 "session_mode": "continue",
                 "session_id": "conv_1",
+                "agent_session_control": True,
                 "base_branch": "main",
                 "unexpected": "dropped",
             }
@@ -136,6 +137,7 @@ async def test_create_posts_payload() -> None:
         "project_id": "proj_1",
         "session_mode": "continue",
         "session_id": "conv_1",
+        "agent_session_control": True,
     }  # unknown fields filtered out
     assert json.loads(out)["id"] == "t1"
     assert client.headers[-1] == {ORCHESTRATION_SOURCE_HEADER: "conv_source"}
@@ -248,18 +250,22 @@ async def test_update_patches_by_id() -> None:
                 "state": "paused",
                 "workspace": "/repo2",
                 "host_id": "fedcba9876543210fedcba9876543210",
+                "project_id": "proj_1",
+                "agent_session_control": False,
             }
         ),
         server_client=client,
         conversation_id="conv_source",
     )
-    verb, url, body = client.calls[0]
+    verb, url, body = client.calls[-1]
     assert (verb, url) == ("PATCH", f"/v1/scheduled-tasks/{_TASK_ID}")
     assert body == {
         **_REVIEW_FIELDS,
         "state": "paused",
         "workspace": "/repo2",
         "host_id": "fedcba9876543210fedcba9876543210",
+        "project_id": "proj_1",
+        "agent_session_control": False,
     }
     assert client.headers[-1] == {ORCHESTRATION_SOURCE_HEADER: "conv_source"}
 
@@ -538,6 +544,7 @@ def test_create_tool_schema_makes_workspace_and_host_optional() -> None:
     # no-workspace research / summary / chat-only task omits both.
     assert "workspace" in properties
     assert "host_id" in properties
+    assert "agent_session_control" in properties
     assert "base_branch" not in properties
     assert "workspace" not in schema["required"]
     assert "host_id" not in schema["required"]
@@ -559,6 +566,7 @@ def test_update_tool_schema_allows_connected_host_changes() -> None:
     assert "host_id" in properties
     # Switching which agent/harness a task runs is part of the update surface.
     assert "agent_id" in properties
+    assert "agent_session_control" in properties
     assert set(schema["required"]) == {"scheduled_task_id", "prompt", "permission_mode"}
 
 
