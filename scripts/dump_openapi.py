@@ -280,6 +280,11 @@ _TAGS: list[dict[str, str]] = [
         ),
     },
     {
+        "name": "inbox_notifications",
+        "x-displayName": "Inbox Notifications",
+        "description": "Durable, owner-scoped notifications posted by agent sessions.",
+    },
+    {
         "name": "projects",
         "x-displayName": "Projects",
         "description": (
@@ -344,6 +349,9 @@ def _build_app_with_stub_stores() -> Any:
     )
     from omnigent.stores.file_store.sqlalchemy_store import SqlAlchemyFileStore
     from omnigent.stores.host_store import HostStore
+    from omnigent.stores.inbox_notification_store.sqlalchemy_store import (
+        SqlAlchemyInboxNotificationStore,
+    )
     from omnigent.stores.policy_store.sqlalchemy_store import SqlAlchemyPolicyStore
     from omnigent.stores.project_store.sqlalchemy_store import SqlAlchemyProjectStore
 
@@ -358,6 +366,7 @@ def _build_app_with_stub_stores() -> Any:
         file_store=SqlAlchemyFileStore(db_uri),
         conversation_store=SqlAlchemyConversationStore(db_uri),
         comment_store=SqlAlchemyCommentStore(db_uri),
+        inbox_notification_store=SqlAlchemyInboxNotificationStore(db_uri),
         artifact_store=artifact_store,
         agent_cache=AgentCache(
             artifact_store=artifact_store,

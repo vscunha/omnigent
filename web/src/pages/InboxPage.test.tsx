@@ -23,6 +23,7 @@ import type { ComponentProps } from "react";
 import type { Conversation } from "@/hooks/useConversations";
 import * as conversationsHook from "@/hooks/useConversations";
 import * as commentInboxHook from "@/hooks/useCommentInbox";
+import * as notificationInboxHook from "@/hooks/useInboxNotifications";
 import * as sessionsApi from "@/lib/sessionsApi";
 import {
   type AskUserQuestionDraft,
@@ -78,6 +79,7 @@ vi.mock("@/hooks/useConversations", async (importActual) => ({
   useConversations: vi.fn(),
 }));
 vi.mock("@/hooks/useCommentInbox", () => ({ useCommentInbox: vi.fn() }));
+vi.mock("@/hooks/useInboxNotifications", () => ({ useInboxNotifications: vi.fn() }));
 // Real exports (ApiError, codes) so failure handling sees genuine error types.
 vi.mock("@/lib/sessionsApi", async (importActual) => ({
   ...(await importActual<typeof sessionsApi>()),
@@ -142,6 +144,19 @@ function commentInboxStub(overrides: Partial<CommentInbox> = {}): CommentInbox {
   };
 }
 
+const acknowledgeNotification = vi.fn();
+
+function notificationInboxStub(overrides: Record<string, unknown> = {}) {
+  return {
+    data: { object: "list", data: [], outstanding_count: 0 },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+    acknowledge: { mutate: acknowledgeNotification, isPending: false },
+    ...overrides,
+  } as unknown as ReturnType<typeof notificationInboxHook.useInboxNotifications>;
+}
+
 function renderPage(
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
@@ -160,6 +175,7 @@ function renderPage(
 beforeEach(() => {
   vi.mocked(conversationsHook.useConversations).mockReturnValue(conversationsStub([]));
   vi.mocked(commentInboxHook.useCommentInbox).mockReturnValue(commentInboxStub());
+  vi.mocked(notificationInboxHook.useInboxNotifications).mockReturnValue(notificationInboxStub());
   vi.mocked(sessionsApi.getSession).mockResolvedValue({
     pendingElicitations: [],
   } as unknown as Awaited<ReturnType<typeof sessionsApi.getSession>>);
@@ -211,6 +227,38 @@ function selectTab(name: string) {
 }
 
 describe("InboxPage states", () => {
+  it("opens a notification source session and can dismiss it", () => {
+    vi.mocked(notificationInboxHook.useInboxNotifications).mockReturnValue(
+      notificationInboxStub({
+        data: {
+          object: "list",
+          outstanding_count: 1,
+          data: [
+            {
+              id: "note_1",
+              user_id: null,
+              source_session_id: "manager_1",
+              title: "Human action required",
+              body: "Reconnect the deployment credential.",
+              severity: "critical",
+              created_at: 1_700_000_000,
+              acknowledged_at: null,
+            },
+          ],
+        },
+      }),
+    );
+
+    renderPage();
+
+    expect(screen.getByText("Human action required").closest("a")).toHaveAttribute(
+      "href",
+      "/c/manager_1",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Human action required" }));
+    expect(acknowledgeNotification).toHaveBeenCalledWith("note_1");
+  });
+
   it("shows a loading state while the session list is still loading", () => {
     // WHY: an in-flight (assembling) list with no items yet must show the
     // loading row, never the empty state.

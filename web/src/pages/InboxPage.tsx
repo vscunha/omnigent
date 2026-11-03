@@ -57,6 +57,7 @@ import {
   InboxIcon,
   Loader2Icon,
   SquarePenIcon,
+  XIcon,
   type LucideIcon,
 } from "lucide-react";
 import { ApprovalCard, type SubmitApprovalFn } from "@/components/blocks/ApprovalCard";
@@ -72,6 +73,7 @@ import { showToast } from "@/components/ui/toast";
 import { useIsCoarsePointer } from "@/hooks/useIsCoarsePointer";
 import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
 import { useSidebarData } from "@/hooks/useSidebarData";
+import { useInboxNotifications } from "@/hooks/useInboxNotifications";
 import {
   clearUnreadOverride,
   isConversationUnseen,
@@ -102,6 +104,7 @@ import {
 import { insertComposerText } from "@/lib/composerText";
 import { isImeCompositionKeyEvent } from "@/lib/ime";
 import { latestOutput } from "@/lib/lastAssistantText";
+import type { InboxNotification } from "@/lib/inboxNotificationsApi";
 import { isEditorLevel } from "@/lib/permissionsApi";
 import { randomUUID } from "@/lib/randomUUID";
 import { describeSendFailure } from "@/lib/sendFailure";
@@ -159,11 +162,11 @@ const INBOX_TABS: { value: InboxFilter; label: string }[] = [
 const EMPTY_STATES: Record<InboxFilter, { title: string; body: string }> = {
   all: {
     title: "Nothing waiting on you",
-    body: "When an agent replies or needs your input, or someone comments on a file, it will show up here.",
+    body: "When an agent replies, needs your input, sends a notification, or someone comments on a file, it will show up here.",
   },
   unread: {
     title: "You’re all caught up",
-    body: "New agent replies and unseen file comments will show up here.",
+    body: "New agent replies, notifications, and unseen file comments will show up here.",
   },
   awaiting: {
     title: "No approvals waiting",
@@ -179,7 +182,8 @@ const PREVIEW_MAX_CHARS = 280;
 type InboxEntry =
   | { kind: "approval"; key: string; at: number; item: InboxItem }
   | { kind: "comment"; key: string; at: number; item: CommentInboxItem }
-  | { kind: "unread"; key: string; at: number; item: UnreadInboxItem };
+  | { kind: "unread"; key: string; at: number; item: UnreadInboxItem }
+  | { kind: "notification"; key: string; at: number; notification: InboxNotification };
 
 const TILE_TONES = {
   yellow: "bg-status-yellow/12 text-status-yellow",
@@ -196,6 +200,7 @@ const PRIMARY_ACTION =
 export function InboxPage() {
   const queryClient = useQueryClient();
   const { trackClick } = useOmnigentAnalytics();
+  const notificationInbox = useInboxNotifications();
   const {
     inbox: conversationsQuery,
     inboxRows: allRows,
@@ -220,6 +225,7 @@ export function InboxPage() {
 
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = conversationsQuery;
   const rows = allRows.filter((c) => (c.pending_elicitations_count ?? 0) > 0);
+  const notifications = notificationInbox.data?.data ?? [];
 
   // One snapshot fetch per session that reports pending prompts. The
   // count rides in the query key, so the WS count patch (new prompt,
@@ -307,13 +313,21 @@ export function InboxPage() {
   const visibleApprovals = showApprovals ? items : [];
   const visibleComments = showUnread ? commentInbox.items : [];
   const visibleUnread = showUnread ? unreadItems : [];
-  const visibleCount = visibleApprovals.length + visibleComments.length + visibleUnread.length;
-  const totalCount = items.length + commentInbox.items.length + unreadItems.length;
+  const visibleNotifications = showUnread ? notifications : [];
+  const visibleCount =
+    visibleApprovals.length +
+    visibleComments.length +
+    visibleUnread.length +
+    visibleNotifications.length;
+  const totalCount =
+    items.length + commentInbox.items.length + unreadItems.length + notifications.length;
   const summary = [
     items.length > 0 && (items.length === 1 ? "1 approval" : `${items.length} approvals`),
     commentInbox.items.length > 0 &&
       (commentInbox.items.length === 1 ? "1 comment" : `${commentInbox.items.length} comments`),
     unreadItems.length > 0 && `${unreadItems.length} unread`,
+    notifications.length > 0 &&
+      (notifications.length === 1 ? "1 notification" : `${notifications.length} notifications`),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -337,6 +351,12 @@ export function InboxPage() {
       key: `unread:${item.row.id}`,
       at: item.row.updated_at,
       item,
+    })),
+    ...visibleNotifications.map((notification) => ({
+      kind: "notification" as const,
+      key: `notification:${notification.id}`,
+      at: notification.created_at,
+      notification,
     })),
   ]);
   const defaultExpandedKey = items[0] && `approval:${items[0].elicitation.elicitationId}`;
@@ -379,7 +399,8 @@ export function InboxPage() {
     conversationsQuery.isLoading ||
     isFetchingNextPage ||
     snapshotQueries.some((q) => q.isLoading) ||
-    commentInbox.isLoading;
+    commentInbox.isLoading ||
+    notificationInbox.isLoading;
   const failedSnapshots = snapshotQueries.filter((q) => q.isError);
   const failedSessionCount =
     failedSnapshots.length + commentInbox.failedCount + Number(Boolean(conversationsQuery.isError));
@@ -433,6 +454,52 @@ export function InboxPage() {
   };
 
   const renderEntry = (entry: InboxEntry) => {
+    if (entry.kind === "notification") {
+      const { notification } = entry;
+      return (
+        <div
+          key={entry.key}
+          data-testid="inbox-notification"
+          className="flex gap-3 rounded-xl border border-border bg-card p-4"
+        >
+          <AlertTriangleIcon
+            className={cn(
+              "mt-0.5 size-4 shrink-0",
+              notification.severity === "critical"
+                ? "text-destructive"
+                : notification.severity === "attention"
+                  ? "text-amber-500"
+                  : "text-muted-foreground",
+            )}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <Link
+                to={`/c/${notification.source_session_id}`}
+                className="font-medium hover:underline"
+                componentId="inbox.notification.open_source"
+              >
+                {notification.title}
+              </Link>
+              <span className="ml-auto text-sm text-muted-foreground">
+                {relativeTime(notification.created_at * 1000)}
+              </span>
+            </div>
+            <p className="mt-1 whitespace-pre-wrap text-ui break-words">{notification.body}</p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={`Dismiss ${notification.title}`}
+            disabled={notificationInbox.acknowledge.isPending}
+            onClick={() => notificationInbox.acknowledge.mutate(notification.id)}
+            componentId="inbox.notification.dismiss"
+          >
+            <XIcon className="size-4" />
+          </Button>
+        </div>
+      );
+    }
     const expanded = expandedOverrides[entry.key] ?? entry.key === defaultExpandedKey;
     const onToggle = () => {
       trackClick(`inbox.${entry.kind}.toggle_expanded`, "button");
@@ -839,6 +906,21 @@ export function InboxPage() {
         </div>
       )}
 
+      {notificationInbox.isError && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-ui">
+          <AlertTriangleIcon className="size-4 shrink-0 text-destructive" />
+          <span className="flex-1">Couldn’t load agent notifications.</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void notificationInbox.refetch()}
+            componentId="inbox.notifications.retry"
+          >
+            Retry
+          </Button>
+        </div>
+      )}
+
       {assembling && visibleCount === 0 && (
         <div className="flex items-center gap-2 py-12 text-ui text-muted-foreground">
           <Loader2Icon className="size-4 animate-spin" />
@@ -846,15 +928,18 @@ export function InboxPage() {
         </div>
       )}
 
-      {!assembling && failedSessionCount === 0 && visibleCount === 0 && (
-        <div className="flex flex-col items-center gap-2 py-16 text-center">
-          <InboxIcon className="size-8 text-muted-foreground/50" />
-          <p className="text-ui font-medium">
-            {hasNextPage ? "Nothing waiting in these sessions" : emptyState.title}
-          </p>
-          <p className="text-sm text-muted-foreground">{emptyState.body}</p>
-        </div>
-      )}
+      {!assembling &&
+        failedSessionCount === 0 &&
+        !notificationInbox.isError &&
+        visibleCount === 0 && (
+          <div className="flex flex-col items-center gap-2 py-16 text-center">
+            <InboxIcon className="size-8 text-muted-foreground/50" />
+            <p className="text-ui font-medium">
+              {hasNextPage ? "Nothing waiting in these sessions" : emptyState.title}
+            </p>
+            <p className="text-sm text-muted-foreground">{emptyState.body}</p>
+          </div>
+        )}
 
       <div className="flex flex-col gap-4">
         {groups.map((group) => (
