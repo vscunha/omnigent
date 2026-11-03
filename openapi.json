@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "AcknowledgeInboxNotificationRequest": {
+        "additionalProperties": false,
+        "description": "Explicit acknowledgement payload used by the Inbox UI.",
+        "properties": {
+          "acknowledged": {
+            "const": true,
+            "default": true,
+            "title": "Acknowledged",
+            "type": "boolean"
+          }
+        },
+        "title": "AcknowledgeInboxNotificationRequest",
+        "type": "object"
+      },
       "AddCommentRequest": {
         "description": "Request body for `POST /sessions/{id}/comments`.",
         "properties": {
@@ -1190,6 +1204,30 @@
             "description": "Error details from the child's most recent failed run, e.g. `{\"code\": \"required_terminal_exited\", \"message\": \"...\"}`. `None` when the child has no durable failure detail. This is the typed projection of runner-owned failure labels; clients should not parse those labels directly.",
             "title": "Last Task Error"
           },
+          "llm_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The child's effective model resolved from its agent spec (`executor.model`), e.g. `\"opencode-go/deepseek-v4-flash\"`. `None` when the child has no agent binding or the spec cannot be loaded. Complements `model_override` / `routed_model`, which stay `None` when the child runs the spec default \u2014 clients can surface this field so the model label never depends on a pin existing.",
+            "title": "Llm Model"
+          },
+          "model_override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit model pinned for this child, including a model selected directly by the caller rather than by Smart Routing. `None` when the child inherits the parent/spec model.",
+            "title": "Model Override"
+          },
           "object": {
             "default": "child_session",
             "description": "Fixed resource type, always `\"child_session\"`.",
@@ -1207,6 +1245,18 @@
             "format": "int64",
             "title": "Pending Elicitations Count",
             "type": "integer"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reasoning effort persisted for this child, e.g. `\"high\"`. `None` when the child runs its harness default.",
+            "title": "Reasoning Effort"
           },
           "routed_model": {
             "anyOf": [
@@ -2071,6 +2121,40 @@
         "title": "CreateDirectoryRequest",
         "type": "object"
       },
+      "CreateInboxNotificationRequest": {
+        "additionalProperties": false,
+        "description": "Payload accepted from the source agent session.",
+        "properties": {
+          "body": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "attention",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body",
+          "severity"
+        ],
+        "title": "CreateInboxNotificationRequest",
+        "type": "object"
+      },
       "CreateProjectRequest": {
         "additionalProperties": false,
         "description": "Request body for `POST /v1/projects`.",
@@ -2100,6 +2184,11 @@
           "agent_id": {
             "title": "Agent Id",
             "type": "string"
+          },
+          "agent_session_control": {
+            "default": false,
+            "title": "Agent Session Control",
+            "type": "boolean"
           },
           "base_branch": {
             "anyOf": [
@@ -13093,6 +13182,11 @@
             ],
             "title": "Agent Id"
           },
+          "agent_session_control": {
+            "default": false,
+            "title": "Agent Session Control",
+            "type": "boolean"
+          },
           "base_branch": {
             "anyOf": [
               {
@@ -16166,6 +16260,107 @@
         "summary": "Import Local Sessions Stream",
         "tags": [
           "imports"
+        ]
+      }
+    },
+    "/v1/inbox/notifications": {
+      "get": {
+        "description": "List the current user's notifications and outstanding count.",
+        "operationId": "list_notifications_v1_inbox_notifications_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_acknowledged",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Acknowledged",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Notifications V1 Inbox Notifications Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Notifications",
+        "tags": [
+          "inbox_notifications"
+        ]
+      }
+    },
+    "/v1/inbox/notifications/{notification_id}": {
+      "patch": {
+        "description": "Acknowledge one notification owned by the current user.",
+        "operationId": "acknowledge_notification_v1_inbox_notifications__notification_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "required": true,
+            "schema": {
+              "title": "Notification Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeInboxNotificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Acknowledge Notification V1 Inbox Notifications  Notification Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge Notification",
+        "tags": [
+          "inbox_notifications"
         ]
       }
     },
@@ -23370,6 +23565,61 @@
         ]
       }
     },
+    "/v1/sessions/{source_session_id}/inbox-notifications": {
+      "post": {
+        "description": "Create a notification sourced from a session the caller can edit.",
+        "operationId": "create_notification_v1_sessions__source_session_id__inbox_notifications_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_session_id",
+            "required": true,
+            "schema": {
+              "title": "Source Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInboxNotificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Notification V1 Sessions  Source Session Id  Inbox Notifications Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Notification",
+        "tags": [
+          "inbox_notifications"
+        ]
+      }
+    },
     "/v1/settings/session-title-instructions": {
       "get": {
         "description": "Read the caller's own title instructions.",
@@ -23701,6 +23951,11 @@
       "description": "Threaded comments on a session, including sending a comment to the agent.",
       "name": "comments",
       "x-displayName": "Comments"
+    },
+    {
+      "description": "Durable, owner-scoped notifications posted by agent sessions.",
+      "name": "inbox_notifications",
+      "x-displayName": "Inbox Notifications"
     },
     {
       "description": "First-class, owner-private containers that group sessions \u2014 create, list, rename, and delete.",

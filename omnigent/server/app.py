@@ -130,6 +130,7 @@ from omnigent.server.routes.extension_assets import create_extension_assets_rout
 from omnigent.server.routes.extensions import create_extensions_router
 from omnigent.server.routes.harnesses import create_harnesses_router
 from omnigent.server.routes.imports import create_imports_router
+from omnigent.server.routes.inbox_notifications import create_inbox_notifications_router
 from omnigent.server.routes.policy_registry import create_policy_registry_router
 from omnigent.server.routes.preferences import create_preferences_router
 from omnigent.server.routes.projects import create_projects_router
@@ -187,6 +188,7 @@ from omnigent.stores.conversation_store import (
     runner_seen_is_fresh,
 )
 from omnigent.stores.host_store import HostStore
+from omnigent.stores.inbox_notification_store import InboxNotificationStore
 from omnigent.stores.permission_store import PermissionStore
 from omnigent.stores.policy_store import PolicyStore
 from omnigent.stores.preference_store import PreferenceStore
@@ -1670,6 +1672,7 @@ def create_app(
     policy_store: PolicyStore | None = None,
     permission_store: PermissionStore | None = None,
     scheduled_task_store: ScheduledTaskStore | None = None,
+    inbox_notification_store: InboxNotificationStore | None = None,
     project_store: ProjectStore | None = None,
     auth_provider: AuthProvider | None = None,
     host_store: HostStore | None = None,
@@ -1752,6 +1755,8 @@ def create_app(
         When off, the ``/v1/scheduled-tasks`` routes return 404 and ``GET /v1/info``
         reports ``automations_enabled`` false. Scheduling of existing tasks is not
         affected.
+    :param inbox_notification_store: Store for durable user-facing Inbox
+        notifications. ``None`` disables the notification endpoints.
     :param scheduled_task_dispatch: Overrides for automations_v2: host ownership,
         the owner identity fires act under, or a replacement executor. ``None``
         uses the built-in executor with every host owned by this replica.
@@ -2222,6 +2227,7 @@ def create_app(
                 tunnel_registry=tunnel_registry,
                 file_store=file_store,
                 artifact_store=artifact_store,
+                project_store=project_store,
                 # Managed-sandbox execution target: provision a fresh sandbox per
                 # fire. ``managed_launches`` is created during app construction
                 # (before this lifespan runs), so it is already on state here.
@@ -2229,7 +2235,6 @@ def create_app(
                 managed_launches=app_inst.state.managed_launches,
                 startup_inputs=app_inst.state.startup_inputs,
                 app_state=app_inst.state,
-                project_store=project_store,
                 single_user_owner=RESERVED_USER_LOCAL if auth_provider is not None else None,
             )
             if not automations_v2_enabled:
@@ -2472,6 +2477,7 @@ def create_app(
 
     app.state.automations_available = automations_available
     app.state.scheduled_task_dispatch_enabled = automations_v2_enabled
+    app.state.scheduled_task_store = scheduled_task_store
     # Deployment base path (e.g. "/proxy/6767"), so route handlers that build
     # a full-page redirect (not covered by BasePathMiddleware's inbound-only
     # strip) can prefix it themselves. "" for a root deployment.
@@ -4103,6 +4109,17 @@ def create_app(
             prefix="/v1",
             tags=["comments"],
         )
+    if inbox_notification_store is not None:
+        app.include_router(
+            create_inbox_notifications_router(
+                inbox_notification_store,
+                conversation_store=conversation_store,
+                auth_provider=auth_provider,
+                permission_store=permission_store,
+            ),
+            prefix="/v1",
+            tags=["inbox_notifications"],
+        )
     if policy_store is not None:
         app.include_router(
             create_session_policies_router(
@@ -4135,11 +4152,11 @@ def create_app(
                 agent_store=agent_store,
                 conversation_store=conversation_store,
                 permission_store=permission_store,
+                project_store=project_store,
                 agent_cache=agent_cache,
                 auth_provider=auth_provider,
                 artifact_store=artifact_store,
                 file_store=file_store,
-                project_store=project_store,
                 automations=app.state.automations,
                 liveness_lookup=_bulk_session_liveness,
             ),

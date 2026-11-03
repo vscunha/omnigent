@@ -79,6 +79,7 @@ const {
   useHostsMock,
   usePullRequestInfoMock,
   useSessionWorktreesMock,
+  notificationCountRef,
 } = vi.hoisted(() => ({
   projectsMock: [] as string[],
   projectRowsRef: { current: undefined as { id: string; name: string }[] | undefined },
@@ -112,6 +113,7 @@ const {
   useHostsMock: vi.fn(),
   usePullRequestInfoMock: vi.fn(),
   useSessionWorktreesMock: vi.fn(),
+  notificationCountRef: { current: 0 },
 }));
 
 // The session tooltip reads repo / PR / branch from the session's GitHub info.
@@ -122,6 +124,12 @@ vi.mock("@/hooks/usePullRequests", async (importOriginal) => ({
 
 vi.mock("@/hooks/useSessionWorktrees", () => ({
   useSessionWorktrees: useSessionWorktreesMock,
+}));
+
+vi.mock("@/hooks/useInboxNotifications", () => ({
+  useInboxNotifications: () => ({
+    data: { object: "list", data: [], outstanding_count: notificationCountRef.current },
+  }),
 }));
 
 vi.mock("@/hooks/useHosts", () => ({
@@ -378,6 +386,7 @@ beforeEach(() => {
   projectSessionsLoadingRef.current = false;
   projectSessionsNextPage.current = {};
   pinnedIdsRef.current = [];
+  notificationCountRef.current = 0;
   // Default to a multi-user server so the tab-based tests see the tabs.
   isServerLocalMock.mockReturnValue(false);
   // The bound session's startup signal (send in flight / PTY pending) feeds
@@ -468,6 +477,13 @@ describe("Sidebar scroll divider", () => {
 });
 
 describe("Sidebar session list", () => {
+  it("includes durable agent notifications in the Inbox badge", () => {
+    notificationCountRef.current = 2;
+    mockConversations([]);
+    renderSidebar();
+    expect(screen.getByLabelText("2 inbox items waiting")).toHaveTextContent("2");
+  });
+
   it("does not mark sessions shared with the viewer, in the list or under Pinned", () => {
     mockConversations([
       conv("shared_running", "Claude Code", { owner: "other@example.com", status: "running" }),
