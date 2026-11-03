@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import replace
 
+from omnigent._session_labels import SCHEDULED_AGENT_SESSION_CONTROL_LABEL
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.spec.types import AgentSpec, MCPServerConfig
 
@@ -14,8 +15,17 @@ MCP_SELECTION_HEADER = "X-Omnigent-MCP-Selection"
 
 
 def mcp_selection_revision(bundle_location: str, labels: dict[str, str]) -> str:
-    """Invalidate session caches after selection edits, even if a reset was missed."""
-    selections = sorted((k, v) for k, v in labels.items() if k.startswith(MCP_SELECTION_PREFIX))
+    """Invalidate session caches after selection or capability edits.
+
+    Session-scoped capability overlays participate because the runner caches the
+    resolved spec for the life of the session: without them in the revision, a
+    patched scheduled-task opt-in/opt-out would keep the previous capability.
+    """
+    selections = sorted(
+        (key, value)
+        for key, value in labels.items()
+        if key.startswith(MCP_SELECTION_PREFIX) or key == SCHEDULED_AGENT_SESSION_CONTROL_LABEL
+    )
     if not selections:
         return bundle_location
     digest = hashlib.sha256(json.dumps(selections).encode()).hexdigest()[:16]

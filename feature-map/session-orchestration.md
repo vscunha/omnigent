@@ -73,7 +73,7 @@ MCP independent creation.
   Side chats and their children also inherit restrictions from the source chain.
   Accepted work, including tasks saved while a worker starts, continues.
   Downgrading or revoking every edit grant restores eligibility.
-- `scheduled`: scheduled runs, their forks and children use the new sends and
+- `scheduled`: scheduled runs, their forks and children use the sends and
   independent creates like any private session their owner owns, so an
   automation can message the owner's other sessions or start workers. The
   Automations page's Jira/Slack/GitHub trigger templates rely on this: their
@@ -154,6 +154,10 @@ MCP independent creation.
   mid-turn (`test_native_claude_files_itself_into_a_project`, nightly). Cursor
   and Antigravity sessions reach the same three tools through their relay
   allowlists, which approve them without an in-terminal prompt.
+- In Automations, save a task whose prompt messages an existing session with
+  `sys_session_message`. A fired run then wakes that session, and a stopped one
+  resumes on its connected host. The optional `agent_session_control` toggle
+  only adds `sys_inbox_notify`.
 - Use the existing Share dialog to share the sender or receiver, then repeat.
   A read-only share of the sender keeps both tools working; an edit share
   refuses them.
@@ -245,8 +249,8 @@ tests/e2e/test_private_session_orchestration.py --reruns 0` uses real local
   Both harnesses also exercise a server restart with the explicit kill switch:
   existing runners remain opted in, but their subsequent peer sends and independent
   creates are refused without writes; session-info reads still work.
-  It also fires an owner-created schedule through the real server/host and checks
-  that the resulting worker cannot message a peer or create an independent worker.
+  It also fires schedules through the real server/host and wakes a stopped target
+  with a native peer message, keeping its child and history.
 - Component integration: `uv run --no-sync pytest
 tests/server/integration/test_session_orchestration.py --reruns 0` checks the
   authenticated routes, ownership stores, refusal matrix and managed request /
@@ -358,18 +362,21 @@ tests/server/integration/test_session_orchestration.py --reruns 0` checks the
   that POST remains uncertain. Timeouts,
   other refusals and unparseable delivery acknowledgements are never retried.
 - Scheduled origin is recorded before launch, cannot be edited by clients, and
-  survives deletion of the schedule and full forks. It no longer limits
+  survives deletion of the schedule and full forks. It does not limit
   orchestration: an unattended run messages and creates sessions under the same
   owner, privacy and sharing checks as an interactive turn. The release flag
-  still turns all orchestration off.
+  still turns all orchestration off. Sessions predating this
+  marker may have no recoverable scheduling origin and remain eligible.
 - Existing child creation and `sys_session_send` keep their parent/completion
   semantics. Independent workers use `sys_session_message` for later work.
   The names also preserve different native approval scopes; see
   [why the messaging tools remain separate](../docs/session-messaging-tool-boundary.md).
 - The server enforces the flag even though tool schemas are discoverable while
   it is disabled. Peer messaging has no additional per-agent opt-in; creation
-  retains its existing `spawn` advertisement gate. Deploy the sibling-session
-  schema before the application; peer messaging needs no schema migration.
+  retains its existing `spawn` advertisement gate. Inbox notifications have
+  a separate per-task opt-in and grant no peer-messaging authority. Deploy the
+  sibling-session schema before the application; peer messaging needs no schema
+  migration.
   V1 treats eligible private agents as delegates across the owner's sessions.
   Unlike sharing, messaging does not grant another user access, but untrusted
   content can still influence an agent to steer other owned sessions. Enabling

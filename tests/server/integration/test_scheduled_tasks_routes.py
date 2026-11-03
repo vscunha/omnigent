@@ -283,6 +283,7 @@ async def test_create_lists_and_gets(auth_client: httpx.AsyncClient, db_uri: str
     assert created["host_id"] == "4b653f6031f35d168cc0b37caa1306d1"
     assert created["max_cost_usd"] == 2.5
     assert created["base_branch"] is None
+    assert created["agent_session_control"] is False
     assert created["execution_target"] == "connected_host"
     task_id = created["id"]
 
@@ -433,6 +434,53 @@ async def test_automations_gate_is_checked_per_request(
         got = await client.get(task_url, headers=_headers())
         assert got.status_code == 200, got.text
         assert await enabled_in_info() is True
+
+
+async def test_project_selection_is_owner_scoped(
+    auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    _make_user(db_uri, email="bob@example.com")
+    foreign = SqlAlchemyProjectStore(db_uri).create("b" * 32, "Bob", "bob@example.com")
+
+    denied = await auth_client.post(
+        "/v1/scheduled-tasks",
+        json=_create_body(project_id=foreign.id),
+        headers=_headers("alice@example.com"),
+    )
+    assert denied.status_code == 404, denied.text
+
+
+async def test_update_can_change_and_clear_project(
+    auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    _make_user(db_uri)
+    projects = SqlAlchemyProjectStore(db_uri)
+    first = projects.create("c" * 32, "First", "alice@example.com")
+    second = projects.create("d" * 32, "Second", "alice@example.com")
+    created = (
+        await auth_client.post(
+            "/v1/scheduled-tasks",
+            json=_create_body(project_id=first.id),
+            headers=_headers(),
+        )
+    ).json()
+    task_id = created["id"]
+
+    changed = await auth_client.patch(
+        f"/v1/scheduled-tasks/{task_id}",
+        json={"project_id": second.id},
+        headers=_headers(),
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["project_id"] == second.id
+
+    cleared = await auth_client.patch(
+        f"/v1/scheduled-tasks/{task_id}",
+        json={"project_id": None},
+        headers=_headers(),
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["project_id"] is None
 
 
 async def test_create_no_workspace_task_persists_null_host_and_workspace(
@@ -1557,6 +1605,33 @@ async def test_update_rejects_null_agent(auth_client: httpx.AsyncClient, db_uri:
         headers=_headers(),
     )
     assert resp.status_code == 422, resp.text
+
+
+async def test_agent_session_control_round_trips_and_updates(
+    auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    """The scheduler control grant is explicit, persisted, and editable."""
+    _make_user(db_uri)
+    created_resp = await auth_client.post(
+        "/v1/scheduled-tasks",
+        json=_create_body(agent_session_control=True),
+        headers=_headers(),
+    )
+    assert created_resp.status_code == 200, created_resp.text
+    created = created_resp.json()
+    assert created["agent_session_control"] is True
+
+    patched = await auth_client.patch(
+        f"/v1/scheduled-tasks/{created['id']}",
+        json={"agent_session_control": False},
+        headers=_headers(),
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["agent_session_control"] is False
+
+    got = await auth_client.get(f"/v1/scheduled-tasks/{created['id']}", headers=_headers())
+    assert got.status_code == 200
+    assert got.json()["agent_session_control"] is False
 
 
 async def test_create_rejects_permission_mode_for_non_claude_agent(

@@ -125,6 +125,7 @@ async def test_create_posts_payload() -> None:
                 "project_id": "proj_1",
                 "session_mode": "continue",
                 "session_id": "conv_1",
+                "agent_session_control": True,
                 "base_branch": "main",
                 "unexpected": "dropped",
             }
@@ -146,6 +147,7 @@ async def test_create_posts_payload() -> None:
         "project_id": "proj_1",
         "session_mode": "continue",
         "session_id": "conv_1",
+        "agent_session_control": True,
     }  # unknown fields filtered out
     assert json.loads(out)["id"] == "t1"
     assert client.headers[-1] == {
@@ -320,7 +322,14 @@ async def test_list_gets() -> None:
 )
 async def test_update_patches_by_id(placement: dict[str, str | None]) -> None:
     client = _RecordingClient(_Resp(body={"id": "t1", "state": "paused"}))
-    arguments = {**_REVIEW_FIELDS, "scheduled_task_id": _TASK_ID, "state": "paused", **placement}
+    arguments = {
+        **_REVIEW_FIELDS,
+        "scheduled_task_id": _TASK_ID,
+        "state": "paused",
+        "project_id": "proj_1",
+        "agent_session_control": False,
+        **placement,
+    }
     jsonschema.validate(
         arguments, SysScheduledTaskUpdateTool().get_schema()["function"]["parameters"]
     )
@@ -330,11 +339,13 @@ async def test_update_patches_by_id(placement: dict[str, str | None]) -> None:
         server_client=client,
         conversation_id="conv_source",
     )
-    verb, url, body = client.calls[0]
+    verb, url, body = client.calls[-1]
     assert (verb, url) == ("PATCH", f"/v1/scheduled-tasks/{_TASK_ID}")
     assert body == {
         **_REVIEW_FIELDS,
         "state": "paused",
+        "project_id": "proj_1",
+        "agent_session_control": False,
         **placement,
     }
     assert client.headers[-1] == {ORCHESTRATION_SOURCE_HEADER: "conv_source"}
@@ -649,6 +660,7 @@ def test_create_tool_schema_makes_workspace_and_host_optional() -> None:
     # no-workspace research / summary / chat-only task omits both.
     assert "workspace" in properties
     assert "host_id" in properties
+    assert "agent_session_control" in properties
     assert "base_branch" not in properties
     assert "workspace" not in schema["required"]
     assert "host_id" not in schema["required"]
@@ -670,6 +682,7 @@ def test_update_tool_schema_allows_connected_host_changes() -> None:
     assert "host_id" in properties
     # Switching which agent/harness a task runs is part of the update surface.
     assert "agent_id" in properties
+    assert "agent_session_control" in properties
     assert set(schema["required"]) == {"scheduled_task_id", "prompt", "permission_mode"}
 
 

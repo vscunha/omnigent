@@ -54,6 +54,7 @@ def test_create_returns_scheduled_task_with_all_fields(
         rrule="FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
         user_id="alice@example.com",
         agent_id=_uid("ag_abc"),
+        project_id=_uid("project_abc"),
         timezone="America/Los_Angeles",
         model_override="claude-opus-4-7",
         reasoning_effort="high",
@@ -61,10 +62,10 @@ def test_create_returns_scheduled_task_with_all_fields(
         mcp_services=("github", "linear"),
         session_mode="continue",
         session_id=_uid("conv_abc"),
+        agent_session_control=True,
         workspace="/home/alice/repo",
         base_branch="HEAD",
         host_id=_uid("host_abc123"),
-        project_id=_uid("proj_abc"),
         delegation_ref="workspaces/1/omnigent-scheduled-tasks/st_1/delegations/owner",
     )
     assert task.id == _uid("st_1")
@@ -74,6 +75,7 @@ def test_create_returns_scheduled_task_with_all_fields(
     assert task.rrule == "FREQ=DAILY;BYHOUR=9;BYMINUTE=0"
     assert task.user_id == "alice@example.com"
     assert task.agent_id == _uid("ag_abc")
+    assert task.project_id == _uid("project_abc")
     assert task.timezone == "America/Los_Angeles"
     assert task.model_override == "claude-opus-4-7"
     assert task.reasoning_effort == "high"
@@ -81,11 +83,11 @@ def test_create_returns_scheduled_task_with_all_fields(
     assert task.mcp_services == ("github", "linear")
     assert task.session_mode == "continue"
     assert task.session_id == _uid("conv_abc")
+    assert task.agent_session_control is True
     assert task.workspace == "/home/alice/repo"
     assert task.base_branch == "HEAD"
     assert task.execution_target == "connected_host"
     assert task.host_id == _uid("host_abc123")
-    assert task.project_id == _uid("proj_abc")
     assert task.delegation_ref == "workspaces/1/omnigent-scheduled-tasks/st_1/delegations/owner"
     stored = store.get(_uid("st_1"))
     assert stored is not None and stored.delegation_ref == task.delegation_ref
@@ -112,10 +114,12 @@ def test_create_minimal_defaults(store: SqlAlchemyScheduledTaskStore) -> None:
     assert task.permission_mode is None
     assert task.session_mode == "new"
     assert task.session_id is None
+    assert task.agent_session_control is False
     assert task.workspace is None
     assert task.base_branch is None
     assert task.execution_target == "connected_host"
     assert task.host_id is None
+    assert task.project_id is None
     assert task.delegation_ref is None
     assert task.state == "active"
 
@@ -244,6 +248,47 @@ def test_update_state_reads_back(store: SqlAlchemyScheduledTaskStore) -> None:
     updated = store.update(_uid("st_upd_state"), state="paused")
     assert updated is not None
     assert updated.state == "paused"
+
+
+def test_update_agent_session_control_reads_back(
+    store: SqlAlchemyScheduledTaskStore,
+) -> None:
+    """A schedule can opt future runs into independent-session control."""
+    store.create(
+        scheduled_task_id=_uid("st_upd_session_control"),
+        name="manager",
+        prompt="inspect the orchestrator",
+        rrule="FREQ=HOURLY",
+        user_id="u",
+        agent_id=_uid("ag"),
+        timezone="UTC",
+    )
+
+    updated = store.update(_uid("st_upd_session_control"), agent_session_control=True)
+
+    assert updated is not None
+    assert updated.agent_session_control is True
+
+
+def test_update_project_can_change_and_clear(store: SqlAlchemyScheduledTaskStore) -> None:
+    store.create(
+        scheduled_task_id=_uid("st_project"),
+        name="manager",
+        prompt="inspect",
+        rrule="FREQ=HOURLY",
+        user_id="u",
+        agent_id=_uid("ag"),
+        timezone="UTC",
+        project_id=_uid("project_old"),
+    )
+
+    changed = store.update(_uid("st_project"), project_id=_uid("project_new"))
+    assert changed is not None
+    assert changed.project_id == _uid("project_new")
+
+    cleared = store.update(_uid("st_project"), project_id=None)
+    assert cleared is not None
+    assert cleared.project_id is None
 
 
 # ── recurring trigger (rrule) ─────────────────────────────────────────────────

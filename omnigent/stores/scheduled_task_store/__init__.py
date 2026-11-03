@@ -93,10 +93,12 @@ class ScheduledTaskStore(ABC):
         agent_id: str,
         timezone: str,
         *,
+        project_id: str | None = None,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
         permission_mode: str | None = None,
         mcp_services: tuple[str, ...] = (),
+        agent_session_control: bool = False,
         max_cost_usd: float | None = None,
         session_mode: str = "new",
         session_id: str | None = None,
@@ -104,7 +106,6 @@ class ScheduledTaskStore(ABC):
         workspace: str | None = None,
         base_branch: str | None = None,
         host_id: str | None = None,
-        project_id: str | None = None,
         execution_target: str = "connected_host",
         state: str = "active",
         delegation_ref: str | None = None,
@@ -121,6 +122,7 @@ class ScheduledTaskStore(ABC):
             is written for; ``None`` in single-user mode.
         :param agent_id: The agent bound to this task.
         :param timezone: IANA timezone the trigger is evaluated in.
+        :param project_id: Optional project that receives each fired session.
         :param model_override: Optional LLM model override.
         :param reasoning_effort: Optional reasoning-effort hint.
         :param permission_mode: Optional native-harness permission mode
@@ -219,17 +221,18 @@ class ScheduledTaskStore(ABC):
         rrule: str | None = None,
         agent_id: str | None = None,
         timezone: str | None = None,
+        project_id: str | None = _UNSET,
         model_override: str | None = _UNSET,
         reasoning_effort: str | None = _UNSET,
         permission_mode: str | None = _UNSET,
         mcp_services: tuple[str, ...] | None = None,
+        agent_session_control: bool | None = None,
         max_cost_usd: float | None = _UNSET,
         session_mode: str | None = None,
         session_id: str | None = _UNSET,
         workspace: str | None = _UNSET,
         base_branch: str | None = _UNSET,
         host_id: str | None = _UNSET,
-        project_id: str | None = _UNSET,
         execution_target: str | None = None,
         state: str | None = None,
         last_run_at: int | None = None,
@@ -242,7 +245,7 @@ class ScheduledTaskStore(ABC):
         Most parameters use ``None`` to mean "leave unchanged". For the per-task
         overrides (``model_override``, ``reasoning_effort``,
         ``permission_mode``), ``base_branch``, ``host_id``, ``project_id``, ``max_cost_usd``,
-        ``session_id``, and ``last_run_conversation_id``, the sentinel default means
+        ``session_id``, ``and ``last_run_conversation_id``, the sentinel default means
         "not provided / leave unchanged"; passing ``None`` explicitly sets the column to NULL —
         so resetting an override to the agent default actually clears it (e.g.
         turning a set ``bypassPermissions`` back off), and clearing a host
