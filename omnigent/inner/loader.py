@@ -279,6 +279,7 @@ def _parse_agent_def(
     agent.timers = data.get("timers", False)
     agent.spawn = data.get("spawn", False)
     agent.agent_session_sharing = data.get("agent_session_sharing", "none")
+    agent.agent_session_control = bool(data.get("agent_session_control", False))
     agent.os_env = _parse_os_env_spec(data.get("os_env"))
     raw_model_egress = data.get("model_egress")
     if raw_model_egress is not None:

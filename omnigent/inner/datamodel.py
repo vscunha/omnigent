@@ -961,6 +961,8 @@ class AgentDef:
     # datamodel has no spec.types dep); mapped to SharePolicy when
     # translated to an AgentSpec.
     agent_session_sharing: str = "none"
+    # Dedicated opt-in for posting Inbox notifications.
+    agent_session_control: bool = False
     os_env: OSEnvSpec | None = None
     model_egress: list[str] | None = None
     terminals: dict[str, TerminalEnvSpec] = field(default_factory=dict)

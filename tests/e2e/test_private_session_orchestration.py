@@ -3,7 +3,9 @@
 import ast
 import json
 import os
+import re
 import shutil
+import signal
 import tempfile
 from pathlib import Path
 
@@ -474,6 +476,94 @@ def test_private_manager_launch_send_read_and_sharing(
                 }
                 assert scheduled in after_scheduled
                 assert len(after_scheduled - before_managed - {scheduled}) == 1
+
+                # A separately fired automation wakes this same target natively
+                # and leaves its existing child attached.
+                child_response = client.post(
+                    "/v1/sessions",
+                    json={
+                        "agent_id": agent,
+                        "parent_session_id": worker,
+                        "title": "Existing child",
+                    },
+                )
+                assert child_response.status_code == 201, child_response.text
+                child_id = child_response.json()["id"]
+                original_runner = client.get(f"/v1/sessions/{worker}").json()["runner_id"]
+                assert original_runner
+
+                def launched_pid():
+                    match = re.search(
+                        rf"Runner started: {re.escape(original_runner)} \(pid=(\d+)\)",
+                        stack.log_path("host").read_text(),
+                    )
+                    return int(match.group(1)) if match else None
+
+                # The PID comes only from this isolated stack's own host log.
+                poll_until(launched_pid, timeout_s=30)
+                runner_pid = launched_pid()
+                assert runner_pid is not None
+                os.kill(runner_pid, signal.SIGKILL)
+                poll_until(
+                    lambda: (
+                        not client.get(f"/v1/runners/{original_runner}/status")
+                        .json()
+                        .get("online", False)
+                    ),
+                    timeout_s=45,
+                )
+                configure("SUPERVISION_WAKE", [{"text": "SUPERVISION_RESUMED"}])
+                configure(
+                    "SCHEDULED_SUPERVISOR_TASK",
+                    [
+                        {
+                            "tool_calls": [
+                                tool(
+                                    "sys_session_message",
+                                    {"session_id": worker, "message": "SUPERVISION_WAKE"},
+                                    "supervisor-send",
+                                )
+                            ]
+                        },
+                        {"text": "SCHEDULED_SUPERVISOR_COMPLETE"},
+                    ],
+                )
+                response = client.post(
+                    "/v1/scheduled-tasks",
+                    json={
+                        "name": "Scheduled supervisor",
+                        "prompt": "SCHEDULED_SUPERVISOR_TASK",
+                        "rrule": "FREQ=DAILY",
+                        "timezone": "UTC",
+                        "agent_id": agent,
+                        "host_id": host_id,
+                        "workspace": str(stack.workspace),
+                    },
+                )
+                assert response.status_code == 200, response.text
+                supervisor_task = response.json()["id"]
+                response = client.post(f"/v1/scheduled-tasks/{supervisor_task}/run")
+                assert response.status_code == 202, response.text
+                poll_until(
+                    lambda: (
+                        client.get(f"/v1/scheduled-tasks/{supervisor_task}")
+                        .json()
+                        .get("last_run_conversation_id")
+                    ),
+                    timeout_s=60,
+                )
+                supervisor = client.get(f"/v1/scheduled-tasks/{supervisor_task}").json()[
+                    "last_run_conversation_id"
+                ]
+                wait_text(supervisor, "SCHEDULED_SUPERVISOR_COMPLETE")
+                wait_text(worker, "SUPERVISION_RESUMED")
+                assert "queued" in json.dumps(tool_results("supervisor-send"))
+                recovered = client.get(f"/v1/sessions/{worker}").json()
+                assert recovered["id"] == worker
+                assert recovered["runner_id"] != original_runner
+                assert recovered["parent_session_id"] is None
+                assert client.get(f"/v1/sessions/{child_id}").json()["parent_session_id"] == worker
+                assert "WORKER_RESULT" in json.dumps(items(worker))
 
                 fork = client.post(
                     f"/v1/sessions/{manager}/fork",

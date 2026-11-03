@@ -133,6 +133,23 @@ def test_session_tools_are_registered_for_every_agent(tool_name: str) -> None:
     assert tool_name in names
 
 
+def test_session_control_tools_require_dedicated_opt_in() -> None:
+    default_names = {
+        schema["function"]["name"] for schema in ToolManager(_make_spec()).get_tool_schemas()
+    }
+    enabled_names = {
+        schema["function"]["name"]
+        for schema in ToolManager(
+            AgentSpec(spec_version=1, agent_session_control=True)
+        ).get_tool_schemas()
+    }
+
+    assert "sys_inbox_notify" not in default_names
+    assert "sys_inbox_notify" in enabled_names
+    assert "sys_session_message" in default_names & enabled_names
+    assert "sys_session_send" not in enabled_names
+
+
 @pytest.fixture()
 def skill_with_resources(tmp_path: Path) -> SkillSpec:
     """
