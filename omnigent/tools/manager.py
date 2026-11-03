@@ -28,6 +28,7 @@ from omnigent.tools.builtins import (
     SysAgentListTool,
     SysCallAsyncTool,
     SysCancelAsyncTool,
+    SysInboxNotifyTool,
     SysListModelsTool,
     SysProjectListTool,
     SysProjectUpdateTool,
@@ -485,6 +486,10 @@ class ToolManager:
             self._tools[SysSessionShareTool.name()] = SysSessionShareTool(
                 allow_public=self._spec.agent_session_sharing is SharePolicy.PUBLIC,
             )
+
+        # Inbox notifications are a dedicated owner-facing grant.
+        if self._spec.agent_session_control:
+            self._tools[SysInboxNotifyTool.name()] = SysInboxNotifyTool()
 
         # send + close: opt-in via declared sub-agents or spawn: true.
         if not (self._spec.tools.agents or self._spec.spawn):

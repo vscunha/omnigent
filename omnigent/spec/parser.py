@@ -322,6 +322,7 @@ def parse(root: Path, *, expand_env: bool = True) -> AgentSpec:
     # granting named users; ``public`` also allows ``__public__``
     # anonymous read.
     agent_session_sharing = _parse_share_policy(raw.get("agent_session_sharing"))
+    agent_session_control = bool(raw.get("agent_session_control", False))
 
     # Honor ``prompt:`` as the legacy alias for ``instructions:`` (per
     # ``_OMNIGENT_SYSTEM_PROMPT_KEYS``); ``instructions:`` wins if both set.
@@ -361,6 +362,7 @@ def parse(root: Path, *, expand_env: bool = True) -> AgentSpec:
         spawn=spawn,
         tool_groups=tool_groups,
         agent_session_sharing=agent_session_sharing,
+        agent_session_control=agent_session_control,
     )
 
 

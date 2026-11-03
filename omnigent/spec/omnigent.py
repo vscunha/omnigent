@@ -187,6 +187,7 @@ def agent_spec_to_agent_def(spec: AgentSpec) -> AgentDef:
         model_egress=spec.model_egress,
         bundle_dir=bundle_dir,
         skills_filter=spec.skills_filter,
+        agent_session_control=spec.agent_session_control,
     )
 
 
@@ -1176,6 +1177,7 @@ def agent_def_to_agent_spec(
         # ("none"/"non-public"/"public"); map it to the SharePolicy enum
         # AgentSpec expects.
         agent_session_sharing=SharePolicy(agent_def.agent_session_sharing),
+        agent_session_control=agent_def.agent_session_control,
         skills_filter=skills_filter,
     )
 

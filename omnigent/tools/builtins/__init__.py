@@ -55,6 +55,7 @@ from omnigent.tools.builtins.scheduled_tasks import (
     SysScheduledTaskListTool,
     SysScheduledTaskUpdateTool,
 )
+from omnigent.tools.builtins.session_message import SysSessionMessageTool
 from omnigent.tools.builtins.session_projects import (
     SysProjectListTool,
     SysProjectUpdateTool,
@@ -62,6 +63,7 @@ from omnigent.tools.builtins.session_projects import (
     SysSessionUpdateTool,
 )
 from omnigent.tools.builtins.session_rename import SysSessionRenameTool
+from omnigent.tools.builtins.session_supervision import SysInboxNotifyTool
 from omnigent.tools.builtins.spawn import (
     SysSessionCloseTool,
     SysSessionCreateTool,
@@ -93,6 +95,7 @@ __all__ = [
     "SysAgentListTool",
     "SysCallAsyncTool",
     "SysCancelAsyncTool",
+    "SysInboxNotifyTool",
     "SysListModelsTool",
     "SysProjectListTool",
     "SysProjectUpdateTool",
@@ -107,6 +110,7 @@ __all__ = [
     "SysSessionGetInfoTool",
     "SysSessionLinkPrTool",
     "SysSessionListTool",
+    "SysSessionMessageTool",
     "SysSessionRenameTool",
     "SysSessionSendTool",
     "SysSessionShareTool",
@@ -290,6 +294,8 @@ _BUILTIN_REGISTRY: dict[str, _BuiltinFactory | None] = {
     # name in the runner's tool dispatch — reserved here so user specs
     # cannot shadow it.
     "sys_advise_models": None,
+    "sys_session_message": None,
+    "sys_inbox_notify": None,
     # ``browser_*`` embedded-browser tools are framework-owned:
     # auto-registered by ``ToolManager._register_browser_tools`` (the
     # single source of truth for registration) unless the spec sets
