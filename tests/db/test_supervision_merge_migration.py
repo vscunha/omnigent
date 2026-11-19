@@ -6,7 +6,25 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 
+from omnigent.db.migration_heads import script_directory
 from omnigent.db.utils import _build_alembic_config
+
+
+def _head_and_local_parent() -> tuple[str, str]:
+    """The single head and the local parent it merged over.
+
+    The head moves with every upstream migration batch, so the round-trip case
+    derives both ids from the revision graph instead of hardcoding them.
+    """
+    script = script_directory(_build_alembic_config("sqlite:///:memory:"))
+    heads = script.get_heads()
+    assert len(heads) == 1, f"expected one Alembic head, found {sorted(heads)}"
+    parents = script.get_revision(heads[0]).down_revision
+    local_parent = parents if isinstance(parents, str) else parents[0]
+    return heads[0], local_parent
+
+
+_CURRENT_HEAD, _LOCAL_PARENT = _head_and_local_parent()
 
 
 @pytest.mark.parametrize("original_head", ["hp1b2c3d4e5f", "b2e4f6a8c013", "d0a1f879a01d"])
@@ -38,9 +56,10 @@ def test_both_lineages_upgrade_preserving_scheduled_project(
                 ).scalar_one()
                 == project_id
             )
-            assert connection.execute(
-                sa.text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == ("ht1b2c3d4e5f")
+            assert (
+                connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one()
+                == _CURRENT_HEAD
+            )
         columns = {column["name"] for column in sa.inspect(engine).get_columns("scheduled_tasks")}
         assert {
             "project_id",
@@ -56,7 +75,7 @@ def test_both_lineages_upgrade_preserving_scheduled_project(
 
 @pytest.mark.parametrize(
     ("original_head", "rollback_head"),
-    [("ht1b2c3d4e5f", "hs1b2c3d4e5f"), ("d0a1f879a01d", "d0a1f879a01d")],
+    [(_CURRENT_HEAD, _LOCAL_PARENT), ("d0a1f879a01d", "d0a1f879a01d")],
 )
 def test_upgrade_and_downgrade_preserve_continued_session(
     tmp_path: Path, original_head: str, rollback_head: str
