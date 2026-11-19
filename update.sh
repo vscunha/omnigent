@@ -15,8 +15,21 @@ readonly api_base_url="http://127.0.0.1:6767"
 readonly health_url="http://127.0.0.1:6767/health"
 readonly data_root="${OMNIGENT_DATA_DIR:-${HOME}/.omnigent}"
 readonly live_db="${data_root}/chat.db"
+readonly backup_dir="$(dirname -- "$live_db")/backups"
+readonly update_state_path="${data_root}/update-state.json"
+readonly backup_keep="${OMNIGENT_UPDATE_BACKUP_KEEP:-2}"
+readonly health_timeout="${OMNIGENT_UPDATE_HEALTH_TIMEOUT:-300}"
+
+# Type checks and the web build run close to this host's memory ceiling.
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}"
 
 recovery_snapshot_path=""
+backup_path=""
+handoff_queued=0
+update_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+update_started_epoch=$(date +%s)
+update_finished_at=""
+update_result="failed"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
@@ -30,10 +43,12 @@ handoff_in_session_update() {
   if [[ "${OMNIGENT:-}" == "1" || -n "${OMNIGENT_RUNNER_ID:-}" ]]; then
     command -v systemd-run >/dev/null 2>&1 || fail \
       "systemd-run is required to update from inside an Omnigent session"
+    # Keep the finished unit so a failure can still be inspected, but clear a
+    # previous terminal instance so this run can reuse the name.
+    systemctl --user reset-failed omnigent-update.service >/dev/null 2>&1 || true
     systemd-run \
       --user \
       --unit=omnigent-update.service \
-      --collect \
       --no-block \
       --working-directory="$repo_root" \
       --setenv=OMNIGENT= \
@@ -44,8 +59,11 @@ handoff_in_session_update() {
       --setenv=DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
       "$repo_root/update.sh" || fail \
       "could not queue the update in the user systemd manager"
+    handoff_queued=1
     printf 'Update queued in omnigent-update.service.\n'
     printf 'Monitor it with: systemctl --user status omnigent-update.service\n'
+    printf 'Read its log with: journalctl --user -u omnigent-update.service --since "%s"\n' \
+      "$update_started_at"
     exit 0
   fi
 }
@@ -56,7 +74,61 @@ cleanup_recovery_snapshot() {
   fi
 }
 
-trap cleanup_recovery_snapshot EXIT
+write_update_state() {
+  local status="$1"
+  update_finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  UPDATE_STATE_PATH="$update_state_path" \
+    UPDATE_STATUS="$status" \
+    UPDATE_REPO="$repo_root" \
+    UPDATE_BRANCH="${branch:-}" \
+    UPDATE_COMMIT="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)" \
+    UPDATE_CODE_REVISION="${code_revision:-}" \
+    UPDATE_DB_REVISION="$(read_db_state 2>/dev/null || echo unknown)" \
+    UPDATE_STARTED_AT="$update_started_at" \
+    UPDATE_FINISHED_AT="$update_finished_at" \
+    UPDATE_DURATION_SECONDS="$(( $(date +%s) - update_started_epoch ))" \
+    UPDATE_BACKUP="${backup_path:-}" \
+    "$repo_root/.venv/bin/python" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+state_path = Path(os.environ["UPDATE_STATE_PATH"])
+state = {
+    "status": os.environ["UPDATE_STATUS"],
+    "repo": os.environ["UPDATE_REPO"],
+    "branch": os.environ["UPDATE_BRANCH"],
+    "commit": os.environ["UPDATE_COMMIT"],
+    "code_revision": os.environ["UPDATE_CODE_REVISION"],
+    "database_revision": os.environ["UPDATE_DB_REVISION"],
+    "started_at": os.environ["UPDATE_STARTED_AT"],
+    "finished_at": os.environ["UPDATE_FINISHED_AT"],
+    "duration_seconds": int(os.environ["UPDATE_DURATION_SECONDS"]),
+    "backup": os.environ["UPDATE_BACKUP"] or None,
+}
+state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+temporary = state_path.with_suffix(".json.tmp")
+temporary.write_text(json.dumps(state, indent=2) + "\n")
+temporary.chmod(0o600)
+temporary.replace(state_path)
+PY
+}
+
+finish() {
+  local status=$?
+  cleanup_recovery_snapshot
+  if (( handoff_queued )); then
+    exit "$status"
+  fi
+  if [[ "$update_result" != "failed" ]]; then
+    status=0
+  fi
+  write_update_state "$update_result" 2>/dev/null || \
+    printf 'update.sh: could not write %s\n' "$update_state_path" >&2
+  exit "$status"
+}
+
+trap finish EXIT
 
 handoff_in_session_update
 
@@ -65,7 +137,7 @@ require_command() {
 }
 
 read_db_state() {
-  .venv/bin/python - "$live_db" <<'PY'
+  "$repo_root/.venv/bin/python" - "$live_db" <<'PY'
 import sqlite3
 import sys
 from pathlib import Path
@@ -93,9 +165,9 @@ PY
 }
 
 backup_live_db() {
-  local timestamp backup_path
+  local timestamp
   timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-  backup_path="$(dirname -- "$live_db")/backups/chat-before-update-${timestamp}.db"
+  backup_path="${backup_dir}/chat-before-update-${timestamp}.db"
   printf 'Pending migration detected; creating SQLite backup: %s\n' "$backup_path"
   .venv/bin/python - "$live_db" "$backup_path" <<'PY'
 import os
@@ -124,7 +196,7 @@ PY
 
 wait_for_server() {
   local attempt
-  for attempt in $(seq 1 60); do
+  for attempt in $(seq 1 "$health_timeout"); do
     if curl -fsS "$health_url" >/dev/null; then
       return 0
     fi
@@ -133,9 +205,56 @@ wait_for_server() {
   return 1
 }
 
+require_disk_space() {
+  local needs_backup="$1" needed_bytes available_bytes database_bytes
+  database_bytes=0
+  if [[ "$needs_backup" == "yes" && -e "$live_db" ]]; then
+    database_bytes=$(stat -c %s "$live_db")
+  fi
+  # A pending migration copies the database; the dependency sync and the web
+  # build need room of their own. Compare in KiB from df -Pk.
+  needed_bytes=$(( database_bytes + 2 * 1024 * 1024 * 1024 ))
+  local target="$data_root"
+  while [[ ! -e "$target" && "$target" != "/" ]]; do
+    target=$(dirname -- "$target")
+  done
+  available_bytes=$(( $(df -Pk "$target" | awk 'NR == 2 {print $4}') * 1024 ))
+  if (( available_bytes >= needed_bytes )); then
+    printf 'Free space: %d MiB (need %d MiB).\n' \
+      $(( available_bytes / 1024 / 1024 )) $(( needed_bytes / 1024 / 1024 ))
+    return 0
+  fi
+  printf 'Insufficient free space on %s: %d MiB available, %d MiB required.\n' \
+    "$data_root" $(( available_bytes / 1024 / 1024 )) $(( needed_bytes / 1024 / 1024 )) >&2
+  if [[ -d "$backup_dir" ]]; then
+    printf 'Existing backups (keep the newest; OMNIGENT_UPDATE_BACKUP_KEEP=%s):\n' \
+      "$backup_keep" >&2
+    du -h -- "$backup_dir"/chat-before-update-*.db 2>/dev/null >&2 || true
+  fi
+  fail "free up space before updating"
+}
+
+prune_old_backups() {
+  local keep="$backup_keep" removed=0 path
+  [[ "$keep" =~ ^[0-9]+$ ]] || fail "OMNIGENT_UPDATE_BACKUP_KEEP must be a number"
+  (( keep >= 1 )) || fail "OMNIGENT_UPDATE_BACKUP_KEEP must keep at least one backup"
+  shopt -s nullglob
+  # Timestamped names sort newest last; never drop the copy this run created.
+  local -a backups
+  mapfile -t backups < <(printf '%s\n' "$backup_dir"/chat-before-update-*.db | sort -r)
+  shopt -u nullglob
+  for path in "${backups[@]:keep}"; do
+    [[ "$path" == "${backup_path:-}" ]] && continue
+    # A copy that was opened read-only leaves -wal/-shm siblings behind.
+    rm -f -- "$path" "${path}-wal" "${path}-shm" &&
+      printf 'Pruned superseded backup: %s\n' "$path" && removed=$((removed + 1))
+  done
+  (( removed > 0 )) || printf 'Backup retention: keeping %d newest copy or copies.\n' "$keep"
+}
+
 wait_for_host_connection() {
   local attempt host_pid
-  for attempt in $(seq 1 60); do
+  for attempt in $(seq 1 "$health_timeout"); do
     host_pid=$(systemctl --user show "$host_unit" --property=MainPID --value)
     if [[ "$host_pid" =~ ^[1-9][0-9]*$ ]] && \
       journalctl --user -u "$host_unit" --since "-90 seconds" --no-pager | \
@@ -197,19 +316,29 @@ uv pip check --python .venv/bin/python
 printf 'Checking native harness imports...\n'
 .venv/bin/python -c \
   'from omnigent.runtime.tool_result_replay import sanitize_replayed_image_blocks; from omnigent.harnesses.codex_native import app_server'
+# Resolve the target revision and the database state before the slow frontend
+# build, so a stray migration head or a full disk fails in seconds.
+migration_output=$(.venv/bin/python -m alembic -c omnigent/db/alembic.ini heads)
+mapfile -t migration_heads < <(printf '%s\n' "$migration_output" | awk 'NF {print $1}')
+[[ ${#migration_heads[@]} -eq 1 ]] || fail \
+  "expected one Alembic head, found ${#migration_heads[@]}; run scripts/merge_migration_heads.py"
+code_revision=${migration_heads[0]}
+
+db_state=$(read_db_state)
+db_revision="$db_state"
+printf 'Database revision: %s (code head %s)\n' "$db_revision" "$code_revision"
+if [[ "$db_revision" == "missing" || "$db_revision" == "$code_revision" ]]; then
+  require_disk_space no
+else
+  require_disk_space yes
+fi
+
 printf 'Synchronizing locked frontend dependencies...\n'
 corepack pnpm install --frozen-lockfile
 printf 'Building embedded web UI...\n'
 corepack pnpm --filter web run build
 [[ -s omnigent/server/static/web-ui/index.html ]] || fail "web UI build produced no index.html"
 
-migration_output=$(uv run --no-sync alembic -c omnigent/db/alembic.ini heads)
-mapfile -t migration_heads < <(printf '%s\n' "$migration_output" | awk 'NF {print $1}')
-[[ ${#migration_heads[@]} -eq 1 ]] || fail "expected one Alembic head, found ${#migration_heads[@]}"
-code_revision=${migration_heads[0]}
-
-db_state=$(read_db_state)
-db_revision="$db_state"
 if [[ "$db_revision" != "missing" && "$db_revision" != "$code_revision" ]]; then
   backup_live_db
 fi
@@ -222,7 +351,14 @@ systemctl --user daemon-reload
 systemctl --user restart "$server_unit"
 if ! wait_for_server; then
   journalctl --user -u "$server_unit" -n 80 --no-pager >&2
-  fail "server did not become healthy within 60 seconds"
+  fail "server did not become healthy within ${health_timeout} seconds"
+fi
+
+db_state=$(read_db_state)
+db_revision="$db_state"
+if [[ "$db_revision" != "$code_revision" ]]; then
+  journalctl --user -u "$server_unit" -n 80 --no-pager >&2
+  fail "database revision is $db_revision after the migration; expected $code_revision"
 fi
 
 printf 'Restarting %s...\n' "$host_unit"
@@ -231,7 +367,7 @@ systemctl --user is-active --quiet "$server_unit" || fail "$server_unit is not a
 systemctl --user is-active --quiet "$host_unit" || fail "$host_unit is not active"
 if ! wait_for_host_connection; then
   journalctl --user -u "$host_unit" -n 80 --no-pager >&2
-  fail "host did not register within 60 seconds"
+  fail "host did not register within ${health_timeout} seconds"
 fi
 curl -fsS "$health_url" >/dev/null || fail "server health check failed after host restart"
 recover_live_sessions
@@ -241,6 +377,9 @@ db_revision="$db_state"
 [[ "$db_revision" == "$code_revision" ]] || \
   fail "database revision is $db_revision; expected $code_revision"
 
+prune_old_backups
+update_result="success"
 printf 'Services updated successfully.\n'
+printf 'Wrote %s\n' "$update_state_path"
 systemctl --user is-active "$server_unit" "$host_unit"
 journalctl --user -u "$server_unit" -u "$host_unit" -n 30 --no-pager
